@@ -1,36 +1,83 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AIRA Frontend
 
-## Getting Started
+The AIRA frontend is a web application built with Next.js, React, TypeScript, and Tailwind CSS. It provides the user interface for interacting with the Amharic Intelligent Research Assistant.
 
-First, run the development server:
+## Requirements
+
+- Node.js
+- npm
+- A running AIRA FastAPI backend
+
+## Installation
+
+From the `frontend/` directory, install dependencies:
+
+```bash
+npm ci
+```
+
+Create the local environment file:
+
+```bash
+cp .env.example .env.local
+```
+
+Configure the backend API URL:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+## Development
+
+Start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+http://localhost:3000
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Production Build
 
-## Learn More
+Build the frontend:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Start the production server:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run start
+```
 
-## Deploy on Vercel
+## Linting
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Run:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run lint
+```
+
+## Backend Integration
+
+The frontend communicates with the AIRA FastAPI backend.
+
+The backend should be running at:
+
+http://localhost:8000
+
+API documentation is available at:
+
+http://localhost:8000/docs
+
+## Technology Stack
+
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
+- Lucide React

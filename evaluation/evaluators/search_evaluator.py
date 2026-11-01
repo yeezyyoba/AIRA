@@ -10,6 +10,7 @@ sentiment analysis, NER, MT, handwritten OCR, and low-resource/multilingual mode
 Zero live API quota consumed.
 """
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -48,19 +49,24 @@ class AcademicSearchEvaluator:
         s2_papers = []
         crossref_papers = []
 
-        # Sort candidate papers by relevance descending to simulate realistic ranking
-        candidates = sorted(relevance_map.items(), key=lambda x: x[1], reverse=True)
+        # Natural benchmark candidate order (independent of ground-truth score)
+        candidates = list(relevance_map.items())
 
         for i, (doc_id, score) in enumerate(candidates):
             title = doc_id.replace("_", " ").title()
+            pub_year = 2020 + (i % 5)
+            # Realistic deterministic citation count independent of relevance score
+            doc_hash = int.from_bytes(hashlib.md5(doc_id.encode("utf-8")).digest()[:4], "big")
+            citations = 5 + (doc_hash % 40) + (2025 - pub_year) * 3
+
             paper_meta = PaperMetadataSchema(
                 title=title,
                 authors=["Abebe Kebede", "Mulugeta Bekele"] if i % 2 == 0 else ["Solomon Desta"],
-                year=2021 + (i % 3),
+                year=pub_year,
                 doi=f"10.1145/{query_id.lower()}.{doc_id}",
                 abstract=f"Academic study regarding {' '.join(query_item.get('expected_topics', []))}. Evaluated on standard corpora.",
                 venue="ACL / EMNLP Anthologies",
-                citation_count=15 * (score + 1),
+                citation_count=citations,
                 source="openalex" if i % 2 == 0 else "semantic_scholar",
                 sources=["openalex"] if i % 2 == 0 else ["semantic_scholar"],
             )
@@ -69,8 +75,8 @@ class AcademicSearchEvaluator:
             else:
                 s2_papers.append(paper_meta)
 
-            # Some papers in crossref for deduplication and multi-source coverage
-            if score >= 2:
+            # Realistic multi-source coverage: simulate papers indexed across providers
+            if i % 3 == 0 or "nmt" in doc_id or "ner" in doc_id:
                 crossref_paper = PaperMetadataSchema(
                     title=title,
                     authors=paper_meta.authors,
@@ -83,6 +89,7 @@ class AcademicSearchEvaluator:
                     sources=["crossref"],
                 )
                 crossref_papers.append(crossref_paper)
+
 
         mock_oa = OpenAlexClient()
         mock_oa.search = AsyncMock(return_value=openalex_papers)
@@ -146,9 +153,9 @@ class AcademicSearchEvaluator:
             "retrieved_ids": retrieved_ids,
             "relevant_count": len(relevant_docs),
             "precision_at_5": round(p_5, 4),
-            "recall_at_5": round(r_5, 4),
+            "recall_at_5": round(r_5, 4) if r_5 is not None else 0.0,
             "precision_at_10": round(p_10, 4),
-            "recall_at_10": round(r_10, 4),
+            "recall_at_10": round(r_10, 4) if r_10 is not None else 0.0,
             "reciprocal_rank": round(rr, 4),
             "ndcg_at_5": round(ndcg_5, 4),
             "ndcg_at_10": round(ndcg_10, 4),

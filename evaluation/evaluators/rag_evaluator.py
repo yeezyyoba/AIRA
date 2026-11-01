@@ -142,7 +142,35 @@ class RAGEvaluator:
             ),
         )
 
-        return [paper_target, paper_distractor_1, paper_distractor_2]
+        twocolumn_pages = {
+            1: "Named Entity Recognition in Ethiopian Social Media Texts. Abebe Kebede, Solomon Desta. Abstract: Processing informal social media texts introduces significant orthographic variation and nested entities.",
+            2: "Section 2: Background and Data. Processing AmhSocialNER-v2 dataset.",
+            3: "Section 3: Model Architecture. We deploy AfroXLMR sequence models.",
+            4: "Section 4: Methodology. We utilize AfroXLMR backbone with a CRF sequence layer and morphological feature injection.",
+            5: "Section 5: Results and Discussion. The AfroXLMR-CRF sequence model reached a Macro-F1 of 84.6% on the AmhSocialNER test benchmark with an annotated corpus of 12,500 posts.",
+            6: "Section 6: Conclusion and Future Work. Future work will explore dialectal variants.",
+        }
+        paper_twocolumn = PaperExtractionResultSchema(
+            paper_id="eval_pdf_twocolumn_02",
+            status=ExtractionStatus.SUCCESS,
+            extraction_method="pymupdf",
+            page_count=6,
+            raw_text_by_page=twocolumn_pages,
+            extracted_data=ExtractedPaperDataSchema(
+                paper_id="eval_pdf_twocolumn_02",
+                title="Named Entity Recognition in Ethiopian Social Media Texts",
+                authors=["Abebe Kebede", "Solomon Desta"],
+                abstract=twocolumn_pages[1],
+                methodology=twocolumn_pages[4],
+                results=twocolumn_pages[5],
+                evidence=[
+                    EvidenceItemSchema(paper_id="eval_pdf_twocolumn_02", page_number=5, section_heading="Results", passage="The AfroXLMR-CRF sequence model reached a Macro-F1 of 84.6% on the AmhSocialNER test benchmark."),
+                ],
+            ),
+        )
+
+        return [paper_target, paper_twocolumn, paper_distractor_1, paper_distractor_2]
+
 
     async def _setup_test_vector_store(self, temp_dir: str, mock_embedder: MockEmbeddingProvider) -> ChromaVectorStore:
         """Initialize and populate isolated Chroma vector collection with chunked papers."""
@@ -168,7 +196,12 @@ class RAGEvaluator:
         vector_db: ChromaVectorStore,
         mock_embedder: MockEmbeddingProvider,
     ) -> Dict[str, Any]:
-        """Evaluate a single QA retrieval test case."""
+        """Evaluate retrieval using actual chunk IDs and explicit page-level labels.
+
+        Scanned-paper questions are excluded because the production indexer
+        correctly rejects documents requiring OCR when OCR is unavailable.
+        """
+
         qa_id = qa_item["qa_id"]
         lang = qa_item["language"]
         question = qa_item["question"]
@@ -176,6 +209,34 @@ class RAGEvaluator:
         expected_pages = set(qa_item["expected_pages"])
         expected_keywords = qa_item.get("expected_answer_keywords", [])
         gt_passage = qa_item.get("ground_truth_passage", "")
+
+        # These benchmark questions refer to a scanned-only fixture.
+        # Its manually authored text is not valid evidence of OCR or RAG ability.
+        if target_paper_id == "eval_pdf_scanned_04":
+            return {
+                "qa_id": qa_id,
+                "language": lang,
+                "question": question,
+                "target_paper_id": target_paper_id,
+                "expected_pages": sorted(expected_pages),
+                "evaluation_status": "NOT_EVALUATED",
+                "exclusion_reason": (
+                    "Scanned-document RAG is not evaluated: OCR is not implemented "
+                    "and the production indexer rejects SCANNED_NEEDS_OCR documents."
+                ),
+                "retrieved_count": 0,
+                "correct_paper": None,
+                "correct_page": None,
+                "precision_at_5": None,
+                "recall_at_5": None,
+                "page_precision_at_5": None,
+                "page_recall": None,
+                "keyword_recall": None,
+                "ground_truth_passage_support": None,
+                "unsupported_passage_rate": None,
+                "faithfulness": None,
+                "unsupported_rate": None,
+            }
 
         retrieval_res: RetrievalResultSchema = await retrieve_research_context(
             question=question,
@@ -186,59 +247,121 @@ class RAGEvaluator:
         )
 
         retrieved_items = retrieval_res.items
-        retrieved_paper_ids = [item.paper_id for item in retrieved_items]
-        retrieved_passages = [item.text for item in retrieved_items]
 
-        # 1. Correct-Paper Rate (is target paper present in top 5?)
+        # Deduplicate by the actual chunk identifier returned by retrieval.
+        unique_items = []
+        seen_chunk_ids = set()
+
+        for item in retrieved_items:
+            if item.chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(item.chunk_id)
+            unique_items.append(item)
+
+        retrieved_paper_ids = [item.paper_id for item in unique_items]
+        retrieved_passages = [item.text for item in unique_items]
+
         correct_paper = target_paper_id in retrieved_paper_ids
 
-        # 2. Correct-Page Rate (is an expected page present in top 5 for target paper?)
-        matched_pages = [
-            p
-            for item in retrieved_items
+        # A retrieved chunk covers an expected page if its actual page range
+        # overlaps that page. No synthetic paper_id_page_number IDs are created.
+        matched_pages = {
+            page
+            for item in unique_items
             if item.paper_id == target_paper_id
-            for p in range(item.page_start, item.page_end + 1)
-            if p in expected_pages
+            for page in expected_pages
+            if item.page_start <= page <= item.page_end
+        }
+
+        correct_page = bool(matched_pages)
+
+        relevant_chunks = [
+            item
+            for item in unique_items
+            if item.paper_id == target_paper_id
+            and any(
+                item.page_start <= page <= item.page_end
+                for page in expected_pages
+            )
         ]
-        correct_page = len(matched_pages) > 0
 
-        # 3. Precision@5 and Recall@5
-        relevant_chunk_ids = {f"{target_paper_id}_p{p}" for p in expected_pages}
-        actual_chunk_ids = [f"{item.paper_id}_p{item.page_start}" for item in retrieved_items]
-
-        p5 = precision_at_k(actual_chunk_ids, relevant_chunk_ids, k=5)
-        r5 = recall_at_k(actual_chunk_ids, relevant_chunk_ids, k=5)
-
-        # 4. Keyword presence in retrieved context
-        combined_text = " ".join(retrieved_passages).lower()
-        keyword_hits = sum(1 for kw in expected_keywords if kw.lower() in combined_text)
-        keyword_ratio = keyword_hits / max(len(expected_keywords), 1)
-
-        # 5. Faithfulness against ground-truth passage
-        faithfulness, unsupported_rate, _ = evidence_grounding_eval(
-            claims=[gt_passage] if gt_passage else [],
-            evidence_passages=retrieved_passages,
-            overlap_threshold=0.20,
+        # This is chunk-level precision among the returned, deduplicated chunks.
+        # Recall is page coverage, NOT chunk recall: the benchmark labels pages,
+        # not independently annotated relevant chunk IDs.
+        page_precision_at_5 = (
+            len(relevant_chunks) / len(unique_items)
+            if unique_items else 0.0
         )
+        page_recall = (
+            len(matched_pages) / len(expected_pages)
+            if expected_pages else None
+        )
+
+        combined_text = " ".join(retrieved_passages).casefold()
+        keyword_hits = sum(
+            1 for keyword in expected_keywords
+            if keyword.casefold() in combined_text
+        )
+        keyword_recall = (
+            keyword_hits / len(expected_keywords)
+            if expected_keywords else None
+        )
+
+        # This checks reference-passage support in retrieved context.
+        # It does NOT evaluate a generated answer's factual faithfulness.
+        if gt_passage.strip() and retrieved_passages:
+            passage_support, unsupported_passage_rate, audit = evidence_grounding_eval(
+                claims=[gt_passage],
+                evidence_passages=retrieved_passages,
+                overlap_threshold=0.20,
+            )
+        else:
+            passage_support = None
+            unsupported_passage_rate = None
+            audit = []
 
         return {
             "qa_id": qa_id,
             "language": lang,
             "question": question,
             "target_paper_id": target_paper_id,
-            "expected_pages": list(expected_pages),
-            "retrieved_count": len(retrieved_items),
+            "expected_pages": sorted(expected_pages),
+            "evaluation_status": "EVALUATED",
+            "retrieved_count": len(unique_items),
+            "retrieved_chunk_ids": [item.chunk_id for item in unique_items],
             "correct_paper": correct_paper,
             "correct_page": correct_page,
-            "precision_at_5": round(p5, 4),
-            "recall_at_5": round(r5, 4),
-            "keyword_recall": round(keyword_ratio, 4),
-            "faithfulness": round(faithfulness, 4),
-            "unsupported_rate": round(unsupported_rate, 4),
+            "matched_expected_pages": sorted(matched_pages),
+            "page_precision_at_5": round(page_precision_at_5, 4),
+            "page_recall": round(page_recall, 4) if page_recall is not None else None,
+            # Compatibility aliases. These are explicitly page/chunk metrics,
+            # not conventional IR precision/recall over annotated relevant chunks.
+            "precision_at_5": round(page_precision_at_5, 4),
+            "recall_at_5": round(page_recall, 4) if page_recall is not None else None,
+            "keyword_recall": (
+                round(keyword_recall, 4) if keyword_recall is not None else None
+            ),
+            "ground_truth_passage_support": (
+                round(passage_support, 4) if passage_support is not None else None
+            ),
+            "unsupported_passage_rate": (
+                round(unsupported_passage_rate, 4)
+                if unsupported_passage_rate is not None else None
+            ),
+            # Legacy field names retained for existing consumers.
+            "faithfulness": (
+                round(passage_support, 4) if passage_support is not None else None
+            ),
+            "unsupported_rate": (
+                round(unsupported_passage_rate, 4)
+                if unsupported_passage_rate is not None else None
+            ),
+            "passage_support_audit": audit,
         }
 
     async def run(self) -> Dict[str, Any]:
-        """Run complete RAG QA benchmark evaluation."""
+        """Run the offline RAG benchmark with explicit exclusions and metric definitions."""
+
         mock_embedder = MockEmbeddingProvider()
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -246,41 +369,100 @@ class RAGEvaluator:
 
             results = []
             for item in self.benchmark_data:
-                res = await self.evaluate_query(item, vector_db, mock_embedder)
-                results.append(res)
+                result = await self.evaluate_query(item, vector_db, mock_embedder)
+                results.append(result)
 
-        total_queries = len(results)
-        if total_queries == 0:
-            return {"error": "Empty RAG benchmark dataset"}
+        evaluated = [
+            result for result in results
+            if result["evaluation_status"] == "EVALUATED"
+        ]
+        excluded = [
+            result for result in results
+            if result["evaluation_status"] != "EVALUATED"
+        ]
 
-        en_queries = [r for r in results if r["language"] == "en"]
-        am_queries = [r for r in results if r["language"] == "am"]
+        def mean_of(subset, key):
+            values = [
+                result[key] for result in subset
+                if result.get(key) is not None
+            ]
+            if not values:
+                return None
+            return round(sum(values) / len(values), 4)
 
-        def _calc_stats(subset: List[Dict[str, Any]]) -> Dict[str, float]:
+        def rate_of(subset, key):
             if not subset:
-                return {}
-            n = len(subset)
+                return None
+            values = [result[key] for result in subset if result.get(key) is not None]
+            if not values:
+                return None
+            return round(
+                sum(1 for value in values if value) / len(values), 4
+            )
+
+        def calc_stats(subset):
+            if not subset:
+                return {"count": 0}
+
             return {
-                "count": n,
-                "correct_paper_rate": round(sum(1 for r in subset if r["correct_paper"]) / n, 4),
-                "correct_page_rate": round(sum(1 for r in subset if r["correct_page"]) / n, 4),
-                "mean_precision_at_5": round(sum(r["precision_at_5"] for r in subset) / n, 4),
-                "mean_recall_at_5": round(sum(r["recall_at_5"] for r in subset) / n, 4),
-                "mean_keyword_recall": round(sum(r["keyword_recall"] for r in subset) / n, 4),
-                "mean_faithfulness": round(sum(r["faithfulness"] for r in subset) / n, 4),
-                "mean_unsupported_rate": round(sum(r["unsupported_rate"] for r in subset) / n, 4),
+                "count": len(subset),
+                "correct_paper_rate": rate_of(subset, "correct_paper"),
+                "correct_page_rate": rate_of(subset, "correct_page"),
+                "mean_page_precision_at_5": mean_of(subset, "page_precision_at_5"),
+                "mean_page_recall": mean_of(subset, "page_recall"),
+                "mean_keyword_recall": mean_of(subset, "keyword_recall"),
+                "mean_ground_truth_passage_support": mean_of(
+                    subset, "ground_truth_passage_support"
+                ),
+                "mean_unsupported_passage_rate": mean_of(
+                    subset, "unsupported_passage_rate"
+                ),
+                # Backward-compatible aliases. These are not answer faithfulness.
+                "mean_precision_at_5": mean_of(subset, "precision_at_5"),
+                "mean_recall_at_5": mean_of(subset, "recall_at_5"),
+                "mean_faithfulness": mean_of(subset, "faithfulness"),
+                "mean_unsupported_rate": mean_of(subset, "unsupported_rate"),
             }
 
-        gemini_live_configured = bool(getattr(settings, "GEMINI_API_KEY", None))
+        english = [r for r in evaluated if r["language"] == "en"]
+        amharic = [r for r in evaluated if r["language"] == "am"]
 
         return {
             "evaluator": "RAGEvaluator",
             "benchmark_dataset": str(self.benchmark_path.name),
-            "embedding_provider_evaluated": "MockEmbeddingProvider (Offline Zero-Quota Verification)",
-            "live_gemini_embedding_configured": gemini_live_configured,
-            "total_queries": total_queries,
-            "overall_metrics": _calc_stats(results),
-            "english_metrics": _calc_stats(en_queries),
-            "amharic_metrics": _calc_stats(am_queries),
+            "evaluation_mode": "offline_synthetic_corpus_mock_embeddings",
+            "embedding_provider_evaluated": (
+                "MockEmbeddingProvider (synthetic embeddings; "
+                "retrieval plumbing verification only)"
+            ),
+            "live_embedding_evaluation_performed": False,
+            "semantic_retrieval_quality_validated": False,
+            "total_queries": len(results),
+            "evaluated_queries": len(evaluated),
+            "excluded_queries": len(excluded),
+            "exclusion_policy": (
+                "Scanned-paper questions are excluded because OCR is not implemented "
+                "and production indexing rejects SCANNED_NEEDS_OCR documents."
+            ),
+            "metric_definitions": {
+                "page_precision_at_5": (
+                    "Relevant returned chunks divided by unique returned chunks; "
+                    "a chunk is relevant when its paper ID matches and its page range "
+                    "overlaps an expected page."
+                ),
+                "page_recall": (
+                    "Distinct expected pages covered by retrieved chunks divided by "
+                    "the number of expected pages. This is page coverage, not "
+                    "conventional chunk-level recall."
+                ),
+                "ground_truth_passage_support": (
+                    "Lexical evidence-grounding overlap between the benchmark's "
+                    "reference passage and retrieved context. No answer is generated; "
+                    "this is not answer faithfulness."
+                ),
+            },
+            "overall_metrics": calc_stats(evaluated),
+            "english_metrics": calc_stats(english),
+            "amharic_metrics": calc_stats(amharic),
             "per_query_results": results,
         }

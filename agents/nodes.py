@@ -1,3 +1,4 @@
+
 """Node implementations for AIRA LangGraph Agentic Workflow.
 
 Implements all 14 graph nodes with observable logging, retry tracking,
@@ -16,14 +17,14 @@ from tools.academic_search import search_academic_papers
 from tools.citation_generator import generate_citation, CitationStyle
 from tools.metadata_validator import validate_paper_metadata
 from services.paper_repository import PaperRepository, paper_repository as default_paper_repo
-from services.report_service import generate_research_comparison_report, export_report_markdown
+from services.report_service import generate_research_comparison_report
 from tools.rag_retriever import retrieve_research_context
 from tools.gap_identifier import identify_research_gaps
 from tools.methodology_analyzer import analyze_research_methodology
 from tools.paper_comparator import compare_research_papers
 from tools.paper_reader import read_research_paper
 from tools.result_analyzer import analyze_experimental_results
-from validation.schemas import ExtractionStatus, PaperMetadataSchema, ValidationStatus
+from validation.schemas import PaperMetadataSchema
 
 logger = get_logger("agents.nodes")
 
@@ -40,7 +41,7 @@ def _log_event(
     outcome: str = "SUCCESS",
     details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Record a structured, observable log entry without exposing private chain-of-thought."""
+    """Record a structured log entry without exposing private chain-of-thought."""
     entry = {
         "timestamp": _now_iso(),
         "step": state.get("step_count", 0),
@@ -55,12 +56,14 @@ def _log_event(
 
 
 def _sanitize_data(obj: Any) -> Any:
-    """Recursively sanitize data to standard Python primitives serializable by msgpack/sqlite."""
+    """Recursively sanitize data to standard Python primitives."""
     if isinstance(obj, dict):
         return {k: _sanitize_data(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
+    if isinstance(obj, (list, tuple)):
         return [_sanitize_data(v) for v in obj]
-    elif hasattr(obj, "item"):
+    if hasattr(obj, "model_dump"):
+        return _sanitize_data(obj.model_dump())
+    if hasattr(obj, "item"):
         return obj.item()
     return obj
 
@@ -70,20 +73,23 @@ def _sanitize_data(obj: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 def receive_request(state: ResearchState) -> Dict[str, Any]:
-    """Ingest initial research query, initialize execution context and observability log."""
+    """Ingest the research query and initialize execution context."""
     query = state.get("query", "").strip()
     session_id = state.get("session_id") or str(uuid.uuid4())[:8]
     logs = list(state.get("observable_logs", []))
 
-    event = {
+    logs.append({
         "timestamp": _now_iso(),
         "step": 0,
         "node": "receive_request",
         "decision": f"Ingested research request for session '{session_id}'.",
         "tool": None,
         "outcome": "SUCCESS",
-    }
-    logs.append(event)
+    })
+
+    max_steps = state.get("max_steps", 15)
+    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
+        max_steps = 15
 
     return {
         "session_id": session_id,
@@ -110,7 +116,7 @@ def receive_request(state: ResearchState) -> Dict[str, Any]:
         "reflections": list(state.get("reflections", [])),
         "critique_status": None,
         "step_count": 0,
-        "max_steps": state.get("max_steps", 15),
+        "max_steps": max_steps,
         "retry_counts": dict(state.get("retry_counts", {})),
         "missing_information": [],
         "clarification_question": None,
@@ -123,13 +129,12 @@ def receive_request(state: ResearchState) -> Dict[str, Any]:
 
 
 def analyze_goal(state: ResearchState) -> Dict[str, Any]:
-    """Parse research goal into target domains and specific research questions."""
+    """Parse the research goal into a domain and research questions."""
     query = state.get("query", "")
     clarification = state.get("clarification_response")
     effective_goal = f"{query} (Clarification: {clarification})" if clarification else query
     step = state.get("step_count", 0) + 1
 
-    # Infer domain and research questions
     domain = state.get("domain")
     if not domain:
         q_lower = effective_goal.lower()
@@ -137,18 +142,17 @@ def analyze_goal(state: ResearchState) -> Dict[str, Any]:
             domain = "Speech Recognition / ASR"
         elif "vision" in q_lower or "image" in q_lower:
             domain = "Computer Vision"
-        elif "summarization" in q_lower or "nlp" in q_lower or "qa" in q_lower or "language" in q_lower:
+        elif any(term in q_lower for term in ("summarization", "nlp", "qa", "language")):
             domain = "Natural Language Processing"
         else:
             domain = "Machine Learning"
 
-    # Derive standard research sub-questions if none specified
     questions = list(state.get("research_questions", []))
     if not questions:
         questions = [
             f"What are the leading architectures and methodologies for {effective_goal}?",
-            f"What benchmark datasets and evaluation metrics are reported?",
-            f"What empirical limitations and research gaps remain open?",
+            "What benchmark datasets and evaluation metrics are reported?",
+            "What empirical limitations and research gaps remain open?",
         ]
 
     logs = list(state.get("observable_logs", []))
@@ -171,14 +175,13 @@ def analyze_goal(state: ResearchState) -> Dict[str, Any]:
 
 
 def check_information(state: ResearchState) -> Dict[str, Any]:
-    """Verify if essential research information is missing or ambiguous."""
+    """Check whether essential research information is missing."""
     query = state.get("query", "").strip()
     clarification = state.get("clarification_response")
     step = state.get("step_count", 0) + 1
     missing: List[str] = []
     question: Optional[str] = None
 
-    # Check for empty or trivial queries
     clean_q = re.sub(r"[^\w\s]", "", query).strip()
     if not clean_q or len(clean_q) < 4:
         missing.append("Specific research topic or problem statement is missing.")
@@ -188,24 +191,17 @@ def check_information(state: ResearchState) -> Dict[str, Any]:
         question = f"The query '{query}' is broad. What specific models, benchmarks, or languages would you like to focus on?"
 
     logs = list(state.get("observable_logs", []))
-    if missing:
-        logs.append({
-            "timestamp": _now_iso(),
-            "step": step,
-            "node": "check_information",
-            "decision": f"Essential information missing: {'; '.join(missing)}. Requesting user clarification.",
-            "tool": None,
-            "outcome": "CLARIFICATION_REQUIRED",
-        })
-    else:
-        logs.append({
-            "timestamp": _now_iso(),
-            "step": step,
-            "node": "check_information",
-            "decision": "Research parameters verified as sufficient to proceed.",
-            "tool": None,
-            "outcome": "SUCCESS",
-        })
+    logs.append({
+        "timestamp": _now_iso(),
+        "step": step,
+        "node": "check_information",
+        "decision": (
+            f"Essential information missing: {'; '.join(missing)}. Requesting clarification."
+            if missing else "Research parameters verified as sufficient to proceed."
+        ),
+        "tool": None,
+        "outcome": "CLARIFICATION_REQUIRED" if missing else "SUCCESS",
+    })
 
     return {
         "missing_information": missing,
@@ -216,7 +212,7 @@ def check_information(state: ResearchState) -> Dict[str, Any]:
 
 
 def ask_user(state: ResearchState) -> Dict[str, Any]:
-    """Pause execution and formulate clarification request for the user."""
+    """Pause execution and formulate a clarification request."""
     step = state.get("step_count", 0) + 1
     logs = list(state.get("observable_logs", []))
     logs.append({
@@ -240,7 +236,7 @@ def ask_user(state: ResearchState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def create_plan(state: ResearchState) -> Dict[str, Any]:
-    """Generate structured multi-step research plan."""
+    """Generate a structured multi-step research plan."""
     step = state.get("step_count", 0) + 1
     plan = [
         {
@@ -294,7 +290,7 @@ def create_plan(state: ResearchState) -> Dict[str, Any]:
 
 
 def select_tools(state: ResearchState) -> Dict[str, Any]:
-    """Dynamically determine the next execution tool based on state progress."""
+    """Determine the next execution tool based on workflow progress."""
     step = state.get("step_count", 0) + 1
     completed = set(state.get("completed_tasks", []))
     discovered = state.get("discovered_papers", [])
@@ -304,45 +300,48 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
     tool_inputs: Dict[str, Any] = {}
     reason = ""
 
-    # Phase 1: Search & Validate
     if "search_and_validate" not in completed:
         if not discovered:
             selected_tool = "search_academic_papers"
             tool_inputs = {"query": state.get("query", "")}
-            reason = "Initial academic search to identify relevant peer-reviewed papers."
+            reason = "Initial academic search to identify relevant papers."
         elif not validated:
             selected_tool = "validate_metadata_integrity"
             tool_inputs = {"papers": discovered}
-            reason = "Validate metadata integrity and DOI authenticity across registries."
+            reason = "Validate paper metadata and DOI authenticity across registries."
         else:
-            # Phase 1 complete, transition
             completed.add("search_and_validate")
 
-    # Phase 2: Extract & Index
     if "search_and_validate" in completed and "extract_and_index" not in completed:
-        unextracted = [p for p in (validated or discovered) if (p.get("paper_id") or p.get("id")) not in extracted]
+        unextracted = [
+            p for p in (validated or discovered)
+            if isinstance(p, dict) and (p.get("paper_id") or p.get("id")) not in extracted
+        ]
         if unextracted:
             target_p = unextracted[0]
             pid = target_p.get("paper_id") or target_p.get("id") or "paper"
             selected_tool = "read_research_paper"
             tool_inputs = {
                 "paper_id": pid,
-                "file_path_or_url": target_p.get("pdf_url") or target_p.get("url") or target_p.get("open_access_url") or f"data/papers/{pid}.pdf",
+                "file_path_or_url": (
+                    target_p.get("pdf_url")
+                    or target_p.get("url")
+                    or target_p.get("open_access_url")
+                    or f"data/papers/{pid}.pdf"
+                ),
             }
             reason = f"Extract structured research dimensions and text for paper '{pid}'."
         else:
             completed.add("extract_and_index")
 
-    # Phase 3: Compare & Analyze
     if "extract_and_index" in completed and "compare_and_analyze" not in completed:
         if not state.get("metric_comparisons"):
             selected_tool = "analyze_experimental_results"
             tool_inputs = {"paper_ids": extracted}
-            reason = "Extract reported numerical metrics and evaluate experimental comparability."
+            reason = "Analyze reported numerical metrics and experimental comparability."
         else:
             completed.add("compare_and_analyze")
 
-    # Phase 4: Identify Gaps
     if "compare_and_analyze" in completed and "identify_gaps" not in completed:
         if not state.get("identified_gaps"):
             selected_tool = "identify_research_gaps"
@@ -354,22 +353,25 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
         else:
             completed.add("identify_gaps")
 
-    # Phase 5: Synthesize Report
     if "identify_gaps" in completed and "synthesize_report" not in completed:
         selected_tool = "generate_research_comparison_report"
         tool_inputs = {
             "paper_ids": extracted,
             "research_question": state.get("research_goal"),
         }
-        reason = "Compile verified 11-section comparative research report."
+        reason = "Compile the comparative research report."
 
-    # Avoid duplicate tool execution with identical parameters unless retrying
     sig = f"{selected_tool}:{tool_inputs}" if selected_tool else "none"
     executed_sigs = list(state.get("executed_tool_signatures", []))
-    if selected_tool and sig in executed_sigs and state.get("validation_status") != "RETRY_REQUESTED":
-        logger.info(f"Duplicate tool signature detected: {sig}. Suppressing repeated call.")
+
+    if (
+        selected_tool
+        and sig in executed_sigs
+        and state.get("validation_status") != "RETRY_REQUESTED"
+    ):
+        logger.info("Duplicate tool signature detected; suppressing repeated call.")
         selected_tool = None
-        reason = "All planned tool actions for current stage have been executed."
+        reason = "All planned tool actions for the current stage have been executed."
 
     if selected_tool:
         executed_sigs.append(sig)
@@ -404,7 +406,7 @@ async def execute_tools(
     repository: Optional[PaperRepository] = None,
     vector_db: Optional[ChromaVectorStore] = None,
 ) -> Dict[str, Any]:
-    """Execute selected tool safely with timeout, injection defense, and error capture."""
+    """Execute the selected tool with error capture and output normalization."""
     step = state.get("step_count", 0) + 1
     tool_name = state.get("selected_tool")
     inputs = state.get("tool_inputs") or {}
@@ -424,36 +426,88 @@ async def execute_tools(
     try:
         if tool_name == "search_academic_papers":
             q = inputs.get("query", "")
-            raw_papers = await search_academic_papers(query=q, max_results=inputs.get("max_results", 5))
-            # Convert to dicts
-            result_data = [p.model_dump() if hasattr(p, "model_dump") else p for p in raw_papers]
+            search_result = await search_academic_papers(
+                query=q,
+                max_results=inputs.get("max_results", 5),
+            )
+
+            # Support both the search service envelope and direct list responses.
+            if isinstance(search_result, dict):
+                raw_papers = search_result.get("papers", [])
+
+                if not isinstance(raw_papers, list):
+                    raise ValueError(
+                        "Academic search response contains an invalid papers field."
+                    )
+
+                result_data = {
+                    **search_result,
+                    "papers": [],
+                }
+
+            elif isinstance(search_result, list):
+                raw_papers = search_result
+                result_data = {"papers": []}
+
+            else:
+                raise ValueError("Academic search returned an invalid response.")
+
+            normalized_papers = []
+
+            for paper in raw_papers:
+                if hasattr(paper, "model_dump"):
+                    paper = paper.model_dump()
+                elif hasattr(paper, "dict") and callable(paper.dict):
+                    paper = paper.dict()
+
+                if not isinstance(paper, dict):
+                    raise ValueError(
+                        "Academic search returned a paper record that is not a dictionary."
+                    )
+
+                normalized_papers.append(_sanitize_data(paper))
+
+            result_data["papers"] = normalized_papers
 
         elif tool_name == "validate_metadata_integrity":
             papers = inputs.get("papers", [])
+            if not isinstance(papers, list):
+                raise ValueError("Metadata validation requires a list of paper records.")
+
             val_results = []
-            for p in papers:
-                meta = PaperMetadataSchema(**p) if isinstance(p, dict) and not isinstance(p, PaperMetadataSchema) else p
-                vr = await validate_paper_metadata(meta)
-                val_results.append(vr)
-            result_data = [v.model_dump() if hasattr(v, "model_dump") else v for v in val_results]
+            for paper in papers:
+                if not isinstance(paper, dict):
+                    raise ValueError("Metadata validation received a non-dictionary paper record.")
+                meta = PaperMetadataSchema(**paper)
+                validation_result = await validate_paper_metadata(meta)
+                val_results.append(
+                    validation_result.model_dump()
+                    if hasattr(validation_result, "model_dump")
+                    else _sanitize_data(validation_result)
+                )
+            result_data = val_results
 
         elif tool_name == "read_research_paper":
             pid = inputs.get("paper_id")
             path = inputs.get("file_path_or_url")
-            # If paper is already saved in repo, reuse it
-            existing = repo.get_paper(pid)
+            existing = repo.get_paper(pid) if repo and pid else None
+
             if existing:
                 result_data = existing.model_dump()
             else:
                 ext_res = await read_research_paper(path, paper_id=pid)
-                if repo and ext_res:
+                if ext_res is None:
+                    raise ValueError("Paper reader returned no extraction result.")
+
+                if repo:
                     repo.save_paper(ext_res)
-                if v_db and ext_res:
-                    # Index chunks if vector store available
+
+                if v_db:
                     from services.document_chunker import DocumentChunker
                     chunks = DocumentChunker().chunk_paper(ext_res)
                     if chunks:
                         v_db.add_chunks(chunks)
+
                 result_data = ext_res.model_dump()
 
         elif tool_name == "retrieve_research_context":
@@ -485,7 +539,10 @@ async def execute_tools(
                 paper_ids=inputs.get("paper_ids", []),
                 repository=repo,
             )
-            result_data = [r.model_dump() for r in res]
+            result_data = [
+                r.model_dump() if hasattr(r, "model_dump") else _sanitize_data(r)
+                for r in res
+            ]
 
         elif tool_name == "identify_research_gaps":
             res = await identify_research_gaps(
@@ -507,14 +564,19 @@ async def execute_tools(
                     router=llm,
                 )
                 result_data = _sanitize_data(res.model_dump())
-                if "title" not in result_data:
-                    result_data["title"] = f"Comparative Research Report: {inputs.get('research_question', '')}"
+                result_data.setdefault(
+                    "title",
+                    f"Comparative Research Report: {inputs.get('research_question', '')}",
+                )
             else:
                 pid = pids[0] if pids else "single_paper"
                 result_data = {
                     "report_id": f"rep_{uuid.uuid4().hex[:8]}",
                     "title": f"Single Paper Research Report: {inputs.get('research_question', '')}",
-                    "executive_summary": f"Factual analysis of paper '{pid}'. Multi-paper comparison unavailable.",
+                    "executive_summary": (
+                        f"Factual analysis of paper '{pid}'. "
+                        "Multi-paper comparison unavailable."
+                    ),
                     "is_degraded": llm.is_degraded_mode() if llm else False,
                 }
 
@@ -528,9 +590,12 @@ async def execute_tools(
         else:
             exec_error = f"Unrecognized execution tool: {tool_name}"
 
-    except Exception as e:
-        logger.error(f"Execution error in tool '{tool_name}': {e}", exc_info=True)
-        exec_error = str(e)
+    except Exception as exc:
+        logger.error(
+            f"Execution error in tool '{tool_name}': {exc}",
+            exc_info=True,
+        )
+        exec_error = str(exc)
 
     record = {
         "timestamp": _now_iso(),
@@ -547,7 +612,10 @@ async def execute_tools(
         "timestamp": _now_iso(),
         "step": step,
         "node": "execute_tools",
-        "decision": f"Executed tool '{tool_name}'. Outcome: {'ERROR - ' + exec_error if exec_error else 'SUCCESS'}",
+        "decision": (
+            f"Executed tool '{tool_name}'. "
+            f"Outcome: {'ERROR - ' + exec_error if exec_error else 'SUCCESS'}"
+        ),
         "tool": tool_name,
         "outcome": "ERROR" if exec_error else "SUCCESS",
     })
@@ -563,6 +631,7 @@ def validate_tool_outputs(state: ResearchState) -> Dict[str, Any]:
     """Validate tool outputs against expected structure and safety rules."""
     step = state.get("step_count", 0) + 1
     tool_results = state.get("tool_results", [])
+
     if not tool_results:
         return {"step_count": step, "validation_status": "NO_OP"}
 
@@ -579,9 +648,23 @@ def validate_tool_outputs(state: ResearchState) -> Dict[str, Any]:
     elif result is None:
         validation_status = "INVALID"
         detail = "Tool returned null output."
-    elif isinstance(result, list) and len(result) == 0:
+    elif isinstance(result, list) and not result:
         validation_status = "INVALID"
-        detail = "Tool returned empty results list."
+        detail = "Tool returned an empty results list."
+    elif tool_name == "search_academic_papers":
+        if not isinstance(result, dict):
+            validation_status = "INVALID"
+            detail = "Academic search did not return a response dictionary."
+        elif not isinstance(result.get("papers"), list):
+            validation_status = "INVALID"
+            detail = "Academic search response has no valid papers list."
+    elif tool_name == "validate_metadata_integrity":
+        if not isinstance(result, list):
+            validation_status = "INVALID"
+            detail = "Metadata validator did not return a list."
+        elif not result:
+            validation_status = "INVALID"
+            detail = "Metadata validator returned no records."
 
     logs = list(state.get("observable_logs", []))
     logs.append({
@@ -601,7 +684,7 @@ def validate_tool_outputs(state: ResearchState) -> Dict[str, Any]:
 
 
 def retry_handler(state: ResearchState) -> Dict[str, Any]:
-    """Enforce bounded retry policy (max 2 retries) with parameter reformulation."""
+    """Enforce bounded retry policy with parameter reformulation."""
     step = state.get("step_count", 0) + 1
     selected_tool = state.get("selected_tool") or "unknown_operation"
     inputs = dict(state.get("tool_inputs") or {})
@@ -614,20 +697,28 @@ def retry_handler(state: ResearchState) -> Dict[str, Any]:
         new_retries = current_retries + 1
         retry_counts[selected_tool] = new_retries
 
-        # Parameter reformulation strategy
         if selected_tool == "search_academic_papers":
-            # Append domain keyword or broaden query
-            orig_q = inputs.get("query", "")
+            original_query = inputs.get("query", "")
             domain = state.get("domain", "")
-            if domain and domain.lower() not in orig_q.lower():
-                inputs["query"] = f"{orig_q} {domain}"
+            if domain and domain.lower() not in original_query.lower():
+                inputs["query"] = f"{original_query} {domain}"
             else:
-                inputs["query"] = orig_q.split()[0] if " " in orig_q else f"{orig_q} benchmark"
+                inputs["query"] = (
+                    f"{original_query.split()[0]} benchmark"
+                    if " " in original_query
+                    else f"{original_query} benchmark"
+                )
 
-        decision = f"Attempting retry {new_retries}/2 for tool '{selected_tool}' with reformulated parameters: {inputs}."
+        decision = (
+            f"Attempting retry {new_retries}/2 for tool '{selected_tool}' "
+            f"with reformulated parameters: {inputs}."
+        )
         status = "RETRY_REQUESTED"
     else:
-        decision = f"Retry limit exhausted ({current_retries}/2) for tool '{selected_tool}'. Marking task as adapted/failed."
+        decision = (
+            f"Retry limit exhausted ({current_retries}/2) for tool "
+            f"'{selected_tool}'. Marking task as adapted/failed."
+        )
         status = "RETRY_EXHAUSTED"
 
     logs.append({
@@ -653,15 +744,29 @@ def retry_handler(state: ResearchState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def store_evidence(state: ResearchState) -> Dict[str, Any]:
-    """Safely store validated findings into working memory preserving evidence provenance."""
+    """Store validated findings while preserving provenance."""
     step = state.get("step_count", 0) + 1
     tool_results = state.get("tool_results", [])
+
     if not tool_results:
         return {"step_count": step}
 
     last_record = tool_results[-1]
     tool_name = last_record.get("tool")
     result = last_record.get("result")
+
+    # Never store failed or invalid tool output as accepted evidence.
+    if last_record.get("error") or last_record.get("status") != "SUCCESS":
+        logs = list(state.get("observable_logs", []))
+        logs.append({
+            "timestamp": _now_iso(),
+            "step": step,
+            "node": "store_evidence",
+            "decision": f"Skipped storing failed output from '{tool_name}'.",
+            "tool": tool_name,
+            "outcome": "SKIPPED",
+        })
+        return {"step_count": step, "observable_logs": logs}
 
     discovered = list(state.get("discovered_papers", []))
     validated = list(state.get("validated_papers", []))
@@ -672,20 +777,28 @@ def store_evidence(state: ResearchState) -> Dict[str, Any]:
     citations = dict(state.get("citations", {}))
     final_rep = state.get("final_report")
 
-    if tool_name == "search_academic_papers" and isinstance(result, list):
-        discovered = result
+    if tool_name == "search_academic_papers" and isinstance(result, dict):
+        papers = result.get("papers", [])
+        if isinstance(papers, list):
+            discovered = papers
+
     elif tool_name == "validate_metadata_integrity" and isinstance(result, list):
         validated = result
+
     elif tool_name == "read_research_paper" and isinstance(result, dict):
         pid = result.get("paper_id")
         if pid and pid not in extracted:
             extracted.append(pid)
+
     elif tool_name == "retrieve_research_context" and isinstance(result, dict):
         retrieved_ev.extend(result.get("chunks", []))
+
     elif tool_name == "analyze_experimental_results" and isinstance(result, list):
         metric_comps = result
+
     elif tool_name == "identify_research_gaps" and isinstance(result, dict):
         gaps = result.get("gaps", [])
+
     elif tool_name == "generate_research_comparison_report" and isinstance(result, dict):
         final_rep = result
 
@@ -714,27 +827,32 @@ def store_evidence(state: ResearchState) -> Dict[str, Any]:
 
 
 def reflect_and_revise(state: ResearchState) -> Dict[str, Any]:
-    """Reflect on accumulated evidence, detect gaps or conflicts, and adapt plan."""
+    """Reflect on evidence and determine whether the workflow should adapt."""
     step = state.get("step_count", 0) + 1
     reflections = list(state.get("reflections", []))
     plan = list(state.get("research_plan", []))
     extracted = state.get("extracted_papers", [])
     max_steps = state.get("max_steps", 15)
 
-    decision = ""
-    # Check stopping or gap conditions
     if step >= max_steps:
-        decision = f"Workflow step limit reached ({step}/{max_steps}). Proceeding to synthesize available evidence."
-        reflections.append(decision)
+        decision = (
+            f"Workflow step limit reached ({step}/{max_steps}). "
+            "Proceeding to synthesize available evidence."
+        )
     elif not extracted and state.get("validation_status") == "RETRY_EXHAUSTED":
-        decision = "Primary academic search exhausted without extracted papers. Revising plan to synthesize qualified findings."
-        reflections.append(decision)
+        decision = (
+            "Primary academic search exhausted without extracted papers. "
+            "Revising plan to synthesize qualified findings."
+        )
     elif len(extracted) >= 1:
-        decision = f"Sufficient factual evidence collected across {len(extracted)} extracted papers. Ready for synthesis."
-        reflections.append(decision)
+        decision = (
+            f"Factual evidence collected from {len(extracted)} extracted paper(s). "
+            "Proceeding with the remaining research tasks."
+        )
     else:
-        decision = "Reflected on current findings; proceeding to next research phase."
-        reflections.append(decision)
+        decision = "Reflected on current findings; proceeding to the next research phase."
+
+    reflections.append(decision)
 
     logs = list(state.get("observable_logs", []))
     logs.append({
@@ -755,7 +873,7 @@ def reflect_and_revise(state: ResearchState) -> Dict[str, Any]:
 
 
 def critique_findings(state: ResearchState) -> Dict[str, Any]:
-    """Critique overall evidence quality, citations, and empirical grounding."""
+    """Critique evidence quality, coverage, and empirical grounding."""
     step = state.get("step_count", 0) + 1
     extracted = state.get("extracted_papers", [])
     status = "APPROVED"
@@ -763,10 +881,13 @@ def critique_findings(state: ResearchState) -> Dict[str, Any]:
 
     if not extracted:
         status = "INSUFFICIENT_EVIDENCE"
-        reason = "No research papers could be retrieved or extracted. Qualified report required."
+        reason = "No research papers could be retrieved or extracted. A qualified report is required."
     elif len(extracted) == 1:
         status = "APPROVED"
-        reason = "Single paper analysis complete; comparative conclusions noted as bounded."
+        reason = (
+            "Single-paper analysis complete. Comparative conclusions must be "
+            "explicitly limited because only one paper was extracted."
+        )
 
     logs = list(state.get("observable_logs", []))
     logs.append({
@@ -795,7 +916,7 @@ async def generate_report_node(
     repository: Optional[PaperRepository] = None,
     vector_db: Optional[ChromaVectorStore] = None,
 ) -> Dict[str, Any]:
-    """Compile finalized 11-section research report using report service."""
+    """Compile the research report using the report service."""
     step = state.get("step_count", 0) + 1
     extracted = state.get("extracted_papers", [])
     goal = state.get("research_goal", "Academic Research Evaluation")
@@ -814,16 +935,16 @@ async def generate_report_node(
                 router=llm,
             )
             report_data = _sanitize_data(report_schema.model_dump())
-            if "title" not in report_data:
-                report_data["title"] = f"Comparative Research Report: {goal}"
+            report_data.setdefault("title", f"Comparative Research Report: {goal}")
         else:
-            # Qualified single-paper or fallback report
             report_data = _sanitize_data({
                 "report_id": f"rep_{uuid.uuid4().hex[:8]}",
                 "title": f"Academic Research Report: {goal}",
                 "executive_summary": (
-                    f"Comprehensive investigation into '{goal}'. "
-                    f"Findings are established across {len(extracted)} extracted paper(s): {', '.join(extracted) if extracted else 'None'}."
+                    f"Investigation into '{goal}'. "
+                    f"Findings are established across {len(extracted)} extracted paper(s): "
+                    f"{', '.join(extracted) if extracted else 'None'}. "
+                    "Comparative conclusions are limited by the available evidence."
                 ),
                 "is_degraded": llm.is_degraded_mode() if llm else False,
             })
@@ -833,7 +954,7 @@ async def generate_report_node(
         "timestamp": _now_iso(),
         "step": step,
         "node": "generate_report",
-        "decision": "Successfully synthesized research comparison report with citations and metadata verification.",
+        "decision": "Generated a report using the available research evidence.",
         "tool": "generate_research_comparison_report",
         "outcome": "SUCCESS",
     })
@@ -846,7 +967,7 @@ async def generate_report_node(
 
 
 def finish_task(state: ResearchState) -> Dict[str, Any]:
-    """Assign terminal stopping reason and record completion."""
+    """Assign the terminal stopping reason and record completion."""
     step = state.get("step_count", 0) + 1
     stopping_reason = state.get("stopping_reason")
 

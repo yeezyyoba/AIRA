@@ -38,7 +38,7 @@ from evaluation.run_evaluation import generate_markdown_report, run_all_evaluati
 # ---------------------------------------------------------------------------
 
 def test_precision_at_k():
-    """Verify precision@k calculation under normal, boundary, and empty conditions."""
+    """Verify precision@k calculation under normal, boundary, empty, and duplicate conditions."""
     retrieved = ["doc_a", "doc_b", "doc_c", "doc_d", "doc_e"]
     relevant = {"doc_a", "doc_c", "doc_x"}
 
@@ -51,9 +51,16 @@ def test_precision_at_k():
     # empty retrieved -> 0.0
     assert precision_at_k([], relevant, k=5) == 0.0
 
+    # Regression: Duplicate retrieved IDs do not inflate precision
+    dupes = ["doc_a", "doc_a", "doc_b", "doc_c", "doc_d"]
+    assert precision_at_k(dupes, relevant, k=5) == 0.4
+
+    # Regression: Fewer than k retrieved results preserves denominator k
+    assert precision_at_k(["doc_a", "doc_c"], relevant, k=5) == 0.4
+
 
 def test_recall_at_k():
-    """Verify recall@k calculation under normal, boundary, and empty conditions."""
+    """Verify recall@k calculation under normal, boundary, empty, and duplicate conditions."""
     retrieved = ["doc_a", "doc_b", "doc_c", "doc_d", "doc_e"]
     relevant = {"doc_a", "doc_c"}
 
@@ -61,18 +68,26 @@ def test_recall_at_k():
     assert recall_at_k(retrieved, relevant, k=5) == 1.0
     # Top 1: only doc_a retrieved -> 1 / 2 = 0.5
     assert recall_at_k(retrieved, relevant, k=1) == 0.5
-    # Empty relevant set defaults to 1.0
-    assert recall_at_k(retrieved, set(), k=5) == 1.0
+
+    # Regression: Empty relevant set returns None (Not Applicable)
+    assert recall_at_k(retrieved, set(), k=5) is None
+    assert recall_at_k(retrieved, relevant, k=0) == 0.0
+
+    # Regression: Duplicate retrieved IDs do not inflate recall numerator
+    dupes = ["doc_a", "doc_a", "doc_x"]
+    assert recall_at_k(dupes, relevant, k=5) == 0.5
 
 
 def test_reciprocal_rank_and_mrr():
-    """Verify reciprocal rank and mean reciprocal rank."""
+    """Verify reciprocal rank and mean reciprocal rank with strict length validation."""
     # First relevant at rank 1 -> 1.0
     assert reciprocal_rank(["d1", "d2"], {"d1"}) == 1.0
     # First relevant at rank 3 -> 1 / 3 = 0.3333...
     assert pytest.approx(reciprocal_rank(["d1", "d2", "d3"], {"d3"}), 0.001) == 0.3333
     # No relevant items -> 0.0
     assert reciprocal_rank(["d1", "d2"], {"d99"}) == 0.0
+    # Empty relevant set -> 0.0
+    assert reciprocal_rank(["d1", "d2"], set()) == 0.0
 
     # MRR across 2 queries: (1.0 + 0.5) / 2 = 0.75
     q_ret = [["d1", "d2"], ["d2", "d1"]]
@@ -80,9 +95,15 @@ def test_reciprocal_rank_and_mrr():
     assert mean_reciprocal_rank(q_ret, q_rel) == 0.75
     assert mean_reciprocal_rank([], []) == 0.0
 
+    # Regression: Unequal MRR input lengths raises ValueError
+    with pytest.raises(ValueError, match="Mismatched query counts"):
+        mean_reciprocal_rank([["d1", "d2"]], [])
+    with pytest.raises(ValueError, match="Mismatched query counts"):
+        mean_reciprocal_rank([], [{"d1"}])
+
 
 def test_dcg_and_ndcg_at_k():
-    """Verify DCG and normalized DCG calculations."""
+    """Verify DCG and normalized DCG calculations with strict validation."""
     relevance_map = {"d1": 3.0, "d2": 2.0, "d3": 1.0, "d4": 0.0}
 
     # Perfect ranking produces nDCG of 1.0
@@ -98,6 +119,20 @@ def test_dcg_and_ndcg_at_k():
     assert ndcg_at_k([], relevance_map, k=5) == 0.0
     assert ndcg_at_k(perfect_ranking, relevance_map, k=0) == 0.0
 
+    # Regression: Negative relevance score raises ValueError
+    with pytest.raises(ValueError, match="non-negative"):
+        dcg_at_k([-1.0, 2.0], k=2)
+    with pytest.raises(ValueError, match="negative score"):
+        ndcg_at_k(["d1"], {"d1": -0.5}, k=1)
+
+    # Regression: Empty relevance judgments and all-zero judgments
+    assert ndcg_at_k(["d1", "d2"], {}, k=5) == 0.0
+    assert ndcg_at_k(["d1", "d2"], {"d1": 0.0, "d2": 0.0}, k=5) == 0.0
+
+    # Regression: Ensure nDCG strictly bounded within [0, 1]
+    val = ndcg_at_k(["d1", "d2"], {"d1": 3.0, "d2": 2.0}, k=2)
+    assert 0.0 <= val <= 1.0
+
 
 def test_text_token_overlap():
     """Verify Jaccard text overlap."""
@@ -110,24 +145,38 @@ def test_text_token_overlap():
 
 
 def test_field_extraction_accuracy():
-    """Verify field extraction comparisons across numbers, lists, and text."""
-    # Numerical tolerance
+    """Verify scale-aware numerical comparison, strict list matching, and N/A policy."""
+    # Scale-aware numerical tolerance
     assert field_extraction_accuracy(31.2, 31.2) is True
     assert field_extraction_accuracy("31.2", 31.2) is True
+    assert field_extraction_accuracy(31.2001, 31.2) is True
     assert field_extraction_accuracy(50, 80) is False
 
-    # List token overlap
+    # Regression: Incorrect numerical extraction outside 1% relative tolerance
+    assert field_extraction_accuracy(1.5, 1.0) is False
+    assert field_extraction_accuracy(0.5, 0.0) is False
+    assert field_extraction_accuracy(35.0, 31.2) is False
+
+    # List matching
     assert field_extraction_accuracy(["Abebe Bikila", "Almaz Worku"], ["Abebe Bikila", "Almaz Worku"]) is True
+    assert field_extraction_accuracy(["Abebe Bikila, Almaz Worku"], ["Abebe Bikila", "Almaz Worku"]) is True
+
+    # Regression: Partial author-list matches must NOT count as full list match
     assert field_extraction_accuracy(["Abebe"], ["Abebe", "Almaz"]) is False
+    assert field_extraction_accuracy(["Abebe Bikila"], ["Abebe Bikila", "Almaz Worku", "Solomon Teferra"]) is False
+    assert field_extraction_accuracy(["Abebe Bikila", "Almaz Worku"], ["Abebe Bikila", "Almaz Worku", "Solomon Teferra"]) is False
 
     # Substring / text match
     assert field_extraction_accuracy("Neural Machine Translation for Amharic", "Neural Machine Translation") is True
     assert field_extraction_accuracy(None, "expected") is False
-    assert field_extraction_accuracy(None, None) is True
+
+    # Regression: Missing values policy (None / None)
+    assert field_extraction_accuracy(None, None, allow_both_none=False) is False
+    assert field_extraction_accuracy(None, None, allow_both_none=True) is True
 
 
 def test_evidence_grounding_eval():
-    """Verify evidence grounding and unsupported claim classification."""
+    """Verify evidence grounding proxy, empty evidence, numbers, and negation checks."""
     evidence = [
         "The model achieves 31.2 BLEU score on 50,000 sentence pairs.",
         "We evaluate on the Amharic-English parallel corpus.",
@@ -145,6 +194,35 @@ def test_evidence_grounding_eval():
     assert audit[1]["supported"] is False
     assert faith == 0.5
     assert unsupp == 0.5
+
+    # Regression: Empty evidence rejects all claims
+    f_empty, u_empty, a_empty = evidence_grounding_eval(
+        claims=["The model achieved high accuracy."],
+        evidence_passages=[],
+    )
+    assert f_empty == 0.0
+    assert u_empty == 1.0
+    assert a_empty[0]["supported"] is False
+
+    # Regression: Contradictory numerical claims
+    f_num, u_num, a_num = evidence_grounding_eval(
+        claims=["The model achieved 99% BLEU score."],
+        evidence_passages=["The model achieves 31.2 BLEU score."],
+    )
+    assert a_num[0]["supported"] is False
+
+    # Regression: Negation and unrelated evidence
+    f_neg, u_neg, a_neg = evidence_grounding_eval(
+        claims=["The model did not converge."],
+        evidence_passages=["The model converged rapidly and reliably."],
+    )
+    assert a_neg[0]["supported"] is False
+
+    f_unrel, u_unrel, a_unrel = evidence_grounding_eval(
+        claims=["Quantum entanglement in semiconductor lasers."],
+        evidence_passages=["The Ethiopian coffee harvest increased this season."],
+    )
+    assert a_unrel[0]["supported"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +295,8 @@ async def test_rag_evaluator():
     assert "MockEmbeddingProvider" in res["embedding_provider_evaluated"]
     overall = res["overall_metrics"]
     assert overall["correct_paper_rate"] >= 0.5
-    assert overall["mean_faithfulness"] >= 0.5
+    assert overall["mean_faithfulness"] >= 0.25
+
 
 
 @pytest.mark.anyio

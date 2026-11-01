@@ -1,25 +1,16 @@
-"""AIRA Phase 9 Master Evaluation Runner and Academic Report Generator.
+"""AIRA Phase 9 evaluation runner and evidence-based report generator.
 
-Orchestrates all domain evaluators:
-1. AcademicSearchEvaluator (IR metrics: P@K, R@K, MRR, nDCG@K)
-2. PDFExtractionEvaluator (Dual-engine extraction & OCR detection)
-3. RAGEvaluator (Multilingual RAG retrieval & QA grounding)
-4. AnalysisEvaluator (Metric compatibility, contradictions, quarantine)
-5. AgenticEvaluator (LangGraph stateful workflow execution & bounds)
-6. ReliabilityEvaluator (Degraded mode & provider failover)
-
-Outputs:
-- Machine-readable JSON: evaluation/evaluation_results.json
-- Comprehensive Markdown Report: evaluation/evaluation_report.md
+All evaluator outputs are preserved. Failures are isolated per evaluator,
+and the report distinguishes measured results from proxies and limitations.
 """
 import asyncio
 import json
 from pathlib import Path
 import sys
 import time
+import traceback
 from typing import Any, Dict
 
-# Ensure project root is in python path
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -32,314 +23,403 @@ from evaluation.evaluators.reliability_evaluator import ReliabilityEvaluator
 from evaluation.evaluators.search_evaluator import AcademicSearchEvaluator
 
 
+def _section(results: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = results.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _metrics(results: Dict[str, Any], section: str, key: str) -> Dict[str, Any]:
+    value = _section(results, section).get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _num(data: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    value = data.get(key, default)
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+
+
+def _pct(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
+def _status(results: Dict[str, Any], key: str) -> str:
+    statuses = results.get("evaluation_status", {})
+    return statuses.get(key, "not_recorded") if isinstance(statuses, dict) else "not_recorded"
+
+
+def _result_line(results: Dict[str, Any], key: str) -> str:
+    status = _status(results, key)
+    if status == "completed":
+        return "Completed"
+    if status == "failed":
+        return "Failed"
+    if status == "not_run":
+        return "Not run"
+    return status.replace("_", " ").capitalize()
+
+
 def generate_markdown_report(results: Dict[str, Any], output_path: Path) -> None:
-    """Generate comprehensive academic evaluation report matching publication standards."""
-    search_metrics = results["academic_search"]["aggregate_metrics"]
-    extract_metrics = results["pdf_extraction"]["aggregate_metrics"]
-    rag_overall = results["rag_retrieval"]["overall_metrics"]
-    rag_en = results["rag_retrieval"]["english_metrics"]
-    rag_am = results["rag_retrieval"]["amharic_metrics"]
-    analysis_metrics = results["analysis_comparison"]
-    agent_metrics = results["agentic_workflow"]
-    rel_metrics = results["reliability"]
+    """Generate a report that does not overstate what the evaluators measure."""
+    search = _section(results, "academic_search")
+    search_m = _metrics(results, "academic_search", "aggregate_metrics")
+    pdf = _section(results, "pdf_extraction")
+    pdf_m = _metrics(results, "pdf_extraction", "aggregate_metrics")
+    rag = _section(results, "rag_retrieval")
+    rag_m = _metrics(results, "rag_retrieval", "overall_metrics")
+    rag_en = _metrics(results, "rag_retrieval", "english_metrics")
+    rag_am = _metrics(results, "rag_retrieval", "amharic_metrics")
+    analysis = _section(results, "analysis_comparison")
+    agent = _section(results, "agentic_workflow")
+    reliability = _section(results, "reliability")
 
-    eval_time = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
-    embed_provider = results["rag_retrieval"].get("embedding_provider_evaluated", "MockEmbeddingProvider")
+    p5 = _num(search_m, "mean_precision_at_5")
+    p10 = _num(search_m, "mean_precision_at_10")
+    r5 = _num(search_m, "mean_recall_at_5")
+    r10 = _num(search_m, "mean_recall_at_10")
+    mrr = _num(search_m, "mrr")
+    ndcg5 = _num(search_m, "mean_ndcg_at_5")
+    ndcg10 = _num(search_m, "mean_ndcg_at_10")
 
-    p5 = search_metrics.get('mean_precision_at_5', 0)
-    p10 = search_metrics.get('mean_precision_at_10', 0)
-    r5 = search_metrics.get('mean_recall_at_5', 0)
-    r10 = search_metrics.get('mean_recall_at_10', 0)
-    mrr = search_metrics.get('mrr', 0)
-    ndcg5 = search_metrics.get('mean_ndcg_at_5', 0)
-    ndcg10 = search_metrics.get('mean_ndcg_at_10', 0)
+    # Separate digital document field extraction from scanned-document handling.
+    archetypes = pdf.get("per_archetype_results", [])
+    digital_scores = [
+        score
+        for item in archetypes if isinstance(item, dict)
+        and item.get("paper_id") != "eval_pdf_scanned_04"
+        for score in (item.get("field_scores", {}).values(),)
+    ]
+    digital_values = [v for group in digital_scores for v in group if isinstance(v, (int, float))]
+    digital_field_accuracy = (
+        sum(digital_values) / len(digital_values) if digital_values else None
+    )
+    digital_field_count = len(digital_values)
 
-    extract_score = extract_metrics.get('mean_extraction_score', 0)
-    ocr_acc = extract_metrics.get('ocr_detection_accuracy', 0) * 100
-    page_acc = extract_metrics.get('page_count_accuracy', 0) * 100
+    scanned = [
+        item for item in archetypes
+        if isinstance(item, dict) and item.get("paper_id") == "eval_pdf_scanned_04"
+    ]
+    scanned_handling = None
+    if scanned:
+        scores = scanned[0].get("field_scores", {})
+        vals = [v for v in scores.values() if isinstance(v, (int, float))]
+        if vals:
+            scanned_handling = sum(vals) / len(vals)
 
-    paper_rate = rag_overall.get('correct_paper_rate', 0) * 100
-    page_rate = rag_overall.get('correct_page_rate', 0) * 100
-    faith_rate = rag_overall.get('mean_faithfulness', 0)
-    unsupp_rate = rag_overall.get('mean_unsupported_rate', 0)
+    rag_total = rag.get("total_queries", 0)
+    rag_evaluated = rag.get("evaluated_queries", rag_m.get("count", 0))
+    rag_excluded = rag.get("excluded_queries", max(0, rag_total - rag_evaluated))
+    embedding = rag.get("embedding_provider") or rag.get("embedding_provider_evaluated", "Not specified")
+    correct_paper = _num(rag_m, "correct_paper_rate")
+    correct_page = _num(rag_m, "correct_page_rate")
+    passage_support = _num(rag_m, "mean_ground_truth_passage_support",
+                           _num(rag_m, "mean_faithfulness"))
+    unsupported_passage = _num(rag_m, "mean_unsupported_passage_rate",
+                               _num(rag_m, "mean_unsupported_rate"))
 
-    analysis_robustness = analysis_metrics.get('robustness_score', 0) * 100
-    passed_cases = analysis_metrics.get('passed_cases', 0)
-    total_cases = analysis_metrics.get('total_cases', 0)
+    analysis_passed = analysis.get("passed_cases", 0)
+    analysis_total = analysis.get("total_cases", 0)
+    agent_passed = agent.get("passed_scenarios", 0)
+    agent_total = agent.get("total_scenarios", 0)
+    stop_accuracy = _num(agent, "stopping_condition_accuracy")
+    reliability_passed = reliability.get("passed_fault_injections", 0)
+    reliability_total = reliability.get("total_fault_injections", 0)
+    reliability_score = _num(reliability, "reliability_score")
 
-    task_success = agent_metrics.get('task_success_rate', 0) * 100
-    stopping_acc = agent_metrics.get('stopping_condition_accuracy', 0) * 100
-    retry_rate = agent_metrics.get('retry_rate', 0) * 100
-
-    rel_score = rel_metrics.get('reliability_score', 0) * 100
-    passed_faults = rel_metrics.get('passed_fault_injections', 0)
-    total_faults = rel_metrics.get('total_fault_injections', 0)
+    eval_time = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    failed = [
+        key for key, value in results.get("evaluation_status", {}).items()
+        if value == "failed"
+    ]
 
     lines = [
         "# AIRA Phase 9: Comprehensive System Evaluation and Reliability Report",
         "",
-        f"**Evaluation Date**: {eval_time}  ",
-        "**Evaluation Mode**: Reproducible Academic Verification (Offline Mock & Deterministic Tool Execution)  ",
-        "**Primary Language Scope**: English and Amharic (Ethiopic Script)  ",
-        f"**Embedding Mode Evaluated**: {embed_provider}  ",
-        "",
-        "---",
+        f"**Report generated:** {eval_time}",
+        "**Evaluation mode:** Offline deterministic and mocked evaluation. These results are not a substitute for live-provider or real-world validation.",
+        "**Language scope:** English and Amharic benchmark cases.",
+        f"**RAG embedding provider:** {embedding}",
         "",
         "## 1. Executive Summary",
         "",
-        "This report documents the rigorous academic evaluation of **AIRA (AI Academic Research Assistant)** across six operational dimensions: multi-provider academic search, dual-engine PDF extraction, bilingual RAG context retrieval, analytical paper comparison, LangGraph agentic workflow execution, and degraded-mode system reliability.",
+        "This report summarizes six evaluation components: academic search, PDF extraction, RAG retrieval, research analysis, agentic workflow checks, and reliability checks.",
         "",
-        "All evaluations were executed without consuming live Gemini or Groq API quotas using reproducible ground-truth benchmarks. The evaluation confirms that AIRA achieves high precision and strict factual grounding across all tested modules, enforcing strict boundaries against hallucinated citations, metric conflation, and infinite agent loops.",
+        "The benchmark suite primarily uses synthetic documents, mocked academic-provider responses, deterministic fixtures, and mock embeddings. It verifies selected software behaviors under controlled conditions. It does not establish general real-world research quality, live academic-search quality, or generated-answer factuality.",
         "",
-        "### Key Performance Indicators (KPIs)",
+        "### Evaluation execution status",
         "",
-        "| Dimension | Primary Metric | Target | Achieved | Status |",
-        "| :--- | :--- | :--- | :--- | :--- |",
-        f"| **Academic Search** | nDCG@5 / MRR | >= 0.80 | **{ndcg5:.4f}** / **{mrr:.4f}** | **PASSED** |",
-        f"| **Search Precision** | Precision@5 / Precision@10 | >= 0.70 | **{p5:.4f}** / **{p10:.4f}** | **PASSED** |",
-        f"| **PDF Extraction** | Mean Field Extraction Score | >= 0.85 | **{extract_score:.4f}** | **PASSED** |",
-        f"| **OCR Detection** | Scanned Raster Identification | 100% | **{ocr_acc:.1f}%** | **PASSED** |",
-        f"| **RAG Retrieval** | Correct-Paper Rate (Top-5) | >= 0.90 | **{paper_rate:.1f}%** | **PASSED** |",
-        f"| **Bilingual QA** | Correct-Page Rate (Top-5) | >= 0.80 | **{page_rate:.1f}%** | **PASSED** |",
-        f"| **Evidence Faithfulness** | Grounding Ratio | >= 0.85 | **{faith_rate:.4f}** | **PASSED** |",
-        f"| **Analysis Robustness** | Challenge Case Pass Rate | 100% | **{analysis_robustness:.1f}%** | **PASSED** |",
-        f"| **Agentic Workflow** | Task Success Rate | 100% | **{task_success:.1f}%** | **PASSED** |",
-        f"| **Stopping Bounds** | Max Steps & Clarification Halts | 100% | **{stopping_acc:.1f}%** | **PASSED** |",
-        f"| **System Reliability** | Fault Tolerance & Degraded Mode | 100% | **{rel_score:.1f}%** | **PASSED** |",
+        "| Component | Execution status |",
+        "|---|---|",
+    ]
+
+    for key, label in [
+        ("academic_search", "Academic search"),
+        ("pdf_extraction", "PDF extraction"),
+        ("rag_retrieval", "RAG retrieval"),
+        ("analysis_comparison", "Research analysis"),
+        ("agentic_workflow", "Agentic workflow"),
+        ("reliability", "Reliability"),
+    ]:
+        lines.append(f"| {label} | {_result_line(results, key)} |")
+
+    lines += [
+        "",
+        f"**Failed evaluators:** {', '.join(failed) if failed else 'None recorded'}",
+        "",
+        "### Key measured results",
+        "",
+        "| Area | Result | Interpretation |",
+        "|---|---:|---|",
+        f"| Search P@5 | {p5:.4f} | Mock-candidate pipeline metric |",
+        f"| Search R@5 | {r5:.4f} | Mock-candidate pipeline metric |",
+        f"| Search MRR | {mrr:.4f} | Mock-candidate pipeline metric |",
+        f"| Search nDCG@5 | {ndcg5:.4f} | Mock-candidate pipeline metric |",
+        f"| Digital PDF field accuracy | {f'{digital_field_accuracy:.4f}' if digital_field_accuracy is not None else 'Not available'} | Synthetic digital PDFs only; {digital_field_count} field checks |",
+        f"| Scanned PDF handling score | {f'{scanned_handling:.4f}' if scanned_handling is not None else 'Not evaluated'} | OCR-needed detection and graceful handling, not OCR text accuracy |",
+        f"| RAG correct-paper rate | {_pct(correct_paper)} | Mock-embedding retrieval plumbing |",
+        f"| RAG correct-page rate | {_pct(correct_page)} | Page-level benchmark coverage |",
+        f"| Analysis challenge cases | {analysis_passed}/{analysis_total} | Component-level challenge checks |",
+        f"| Agentic scenarios | {agent_passed}/{agent_total} | Node/routing scenario checks, not end-to-end task success |",
+        f"| Reliability checks | {reliability_passed}/{reliability_total} | Four specific fault-handling checks |",
         "",
         "---",
         "",
         "## 2. Evaluation Architecture",
         "",
-        "The AIRA evaluation framework decouples offline deterministic logic from external stochastic LLM providers, ensuring deterministic auditability:",
-        "",
         "```mermaid",
         "flowchart TD",
-        "    Bench[\"Ground-Truth Benchmark Catalog\"] --> S_Eval[\"Search Evaluator\"]",
-        "    Bench --> E_Eval[\"PDF Extraction Evaluator\"]",
-        "    Bench --> R_Eval[\"RAG Retrieval Evaluator\"]",
-        "    Bench --> A_Eval[\"Analysis Evaluator\"]",
-        "    Bench --> G_Eval[\"Agentic Workflow Evaluator\"]",
-        "    Bench --> Rel_Eval[\"Reliability Evaluator\"]",
-        "",
-        "    S_Eval -->|IR Metrics: P@K, R@K, MRR, nDCG| Agg[\"Metrics & Scoring Engine\"]",
-        "    E_Eval -->|Field Overlap, OCR Flag, Page Count| Agg",
-        "    R_Eval -->|Paper/Page Rate, Faithfulness| Agg",
-        "    A_Eval -->|Metric Segregation, Quarantine| Agg",
-        "    G_Eval -->|Traversal, Retry, Bounds| Agg",
-        "    Rel_Eval -->|Degraded Mode Availability| Agg",
-        "",
-        "    Agg --> JSON[\"evaluation_results.json\"]",
-        "    Agg --> Report[\"evaluation_report.md\"]",
+        "    B[Benchmark fixtures] --> S[Academic search evaluator]",
+        "    B --> P[PDF extraction evaluator]",
+        "    B --> R[RAG evaluator]",
+        "    B --> A[Analysis evaluator]",
+        "    B --> G[Agentic evaluator]",
+        "    B --> L[Reliability evaluator]",
+        "    S --> J[JSON results]",
+        "    P --> J",
+        "    R --> J",
+        "    A --> J",
+        "    G --> J",
+        "    L --> J",
+        "    J --> M[Markdown report]",
         "```",
         "",
-        "---",
+        "The search evaluator injects mocked provider clients. The PDF evaluator creates synthetic PDFs. The RAG evaluator uses mock embeddings. The analysis and agentic evaluators exercise selected components and routes. The reliability evaluator injects selected provider and input failures.",
         "",
         "## 3. Mathematical Metric Definitions and Formulas",
         "",
-        "The evaluation framework rigorously implements standard Information Retrieval and QA metrics:",
+        "For a cutoff K, Precision@K uses the fixed denominator K:",
         "",
-        "1. **Precision at Rank K (P@K)**:",
-        "   $$P@K = \\frac{|\\text{Retrieved}_{1:K} \\cap \\text{Relevant}|}{K}$$",
-        "   Measures the fraction of top-K retrieved items that are relevant to the academic query.",
+        r"$$P@K = \frac{|Retrieved_{1:K} \cap Relevant|}{K}$$",
         "",
-        "2. **Recall at Rank K (R@K)**:",
-        "   $$R@K = \\frac{|\\text{Retrieved}_{1:K} \\cap \\text{Relevant}|}{|\\text{Relevant}|}$$",
-        "   Measures the fraction of total known relevant items retrieved in top-K.",
+        "Recall@K is the fraction of known relevant items retrieved:",
         "",
-        "3. **Reciprocal Rank (RR) and Mean Reciprocal Rank (MRR)**:",
-        "   $$RR(q) = \\frac{1}{\\text{rank}_1}, \\quad MRR = \\frac{1}{|Q|} \\sum_{i=1}^{|Q|} RR(q_i)$$",
-        "   Measures how high the first relevant document is ranked across queries.",
+        r"$$R@K = \frac{|Retrieved_{1:K} \cap Relevant|}{|Relevant|}$$",
         "",
-        "4. **Discounted Cumulative Gain (DCG@K) and Normalized DCG@K (nDCG@K)**:",
-        "   $$DCG@K = \\sum_{i=1}^{K} \\frac{2^{\\text{rel}_i} - 1}{\\log_2(i + 1)}, \\quad nDCG@K = \\frac{DCG@K}{IDCG@K}$$",
-        "   Accounts for graded relevance judgments (0 = irrelevant, 1 = marginal, 2 = relevant, 3 = highly relevant).",
+        "MRR averages reciprocal rank of the first relevant result. nDCG uses graded relevance judgments and discounts lower-ranked results.",
         "",
-        "5. **Evidence Faithfulness and Unsupported Claim Rate**:",
-        "   $$\\text{Faithfulness} = \\frac{|\\text{Claims Verified by Evidence}|}{|\\text{Total Generated Claims}|}, \\quad \\text{Unsupported Rate} = 1.0 - \\text{Faithfulness}$$",
+        "**Important:** A fixed-denominator P@K can be lower when fewer than K items are returned. This is intentional in the current metric implementation and must be interpreted alongside the actual returned-result count.",
         "",
-        "---",
+        "The RAG passage-support score is a lexical evidence-overlap proxy. It is not a measure of LLM-generated answer faithfulness. Page recall measures coverage of expected pages, not recall of all relevant chunks.",
         "",
         "## 4. Benchmark Datasets Catalog",
         "",
-        "The benchmark suite consists of six carefully curated datasets located in `evaluation/benchmarks/`:",
-        "",
-        "1. **`academic_search_benchmark.json`** (10 queries): Realistic queries targeting low-resource Amharic NLP (Sentiment, NER, NMT, Handwritten OCR, Multilingual LLMs) with human-graded relevance judgments.",
-        "2. **`pdf_extraction_benchmark.json`** (4 document archetypes): Clean digital single-column, two-column conference papers, complex numerical result tables, and scanned raster image documents.",
-        "3. **`rag_qa_benchmark.json`** (8 QA pairs): Bilingual evaluation suite (4 English, 4 Amharic) testing exact metric lookup, dataset parameters, and model architectures.",
-        "4. **`analysis_comparison_benchmark.json`** (5 challenge cases): Adversarial metric compatibility, contradictory findings, fabricated DOIs, unsupported claims, and insufficient evidence scenarios.",
-        "5. **`agentic_scenarios_benchmark.json`** (6 scenarios): Orchestration tests covering user clarification, reflection/plan revision, retry recovery, retry exhaustion, max steps bound, and degraded mode.",
-        "6. **`end_to_end_tasks.json`** (3 research tasks): Complete end-to-end research questions with weighted scoring rubrics.",
-        "",
-        "---",
+        "| Dataset | Size | Evaluation scope |",
+        "|---|---:|---|",
+        f"| `academic_search_benchmark.json` | {search.get('total_queries', 'Not run')} queries | Graded relevance judgments; mocked candidate records |",
+        f"| `pdf_extraction_benchmark.json` | {pdf.get('total_archetypes', 'Not run')} archetypes | Programmatically generated PDF fixtures |",
+        f"| `rag_qa_benchmark.json` | {rag_total} questions | Bilingual retrieval; scanned cases may be excluded |",
+        f"| `analysis_comparison_benchmark.json` | {analysis_total} cases | Analysis and validation challenge fixtures |",
+        f"| `agentic_scenarios_benchmark.json` | {agent_total} scenarios | Selected LangGraph node and routing checks |",
+        "| `end_to_end_tasks.json` | 3 tasks | Benchmark definitions; not evidence of execution unless separately run |",
         "",
         "## 5. Detailed Evaluation Results",
         "",
-        "### 5.1 Academic Search Evaluation (Information Retrieval)",
+        "### 5.1 Academic Search",
         "",
-        f"- **Total Queries Evaluated**: {results['academic_search']['total_queries']}",
-        f"- **Mean Precision@5**: {p5:.4f}",
-        f"- **Mean Recall@5**: {r5:.4f}",
-        f"- **Mean Precision@10**: {p10:.4f}",
-        f"- **Mean Recall@10**: {r10:.4f}",
-        f"- **Mean Reciprocal Rank (MRR)**: {mrr:.4f}",
-        f"- **Mean nDCG@5**: {ndcg5:.4f}",
-        f"- **Mean nDCG@10**: {ndcg10:.4f}",
+        f"- Queries: {search.get('total_queries', 'Not run')}",
+        f"- P@5: {p5:.4f}; R@5: {r5:.4f}",
+        f"- P@10: {p10:.4f}; R@10: {r10:.4f}",
+        f"- MRR: {mrr:.4f}",
+        f"- nDCG@5: {ndcg5:.4f}; nDCG@10: {ndcg10:.4f}",
         "",
-        "### 5.2 Research Paper Extraction Evaluation",
+        "The evaluator constructs candidate paper records from the benchmark relevance judgments and supplies them through mocked OpenAlex, Semantic Scholar, and Crossref clients. These metrics assess the controlled search/merge/ranking pipeline; they do not independently measure discovery quality on live academic indexes.",
         "",
-        f"- **Total Archetypes Evaluated**: {results['pdf_extraction']['total_archetypes']}",
-        f"- **Mean Field Extraction Score**: {extract_score:.4f}",
-        f"- **Scanned Raster / OCR Detection Accuracy**: {ocr_acc:.1f}%",
-        f"- **Page Count Accuracy**: {page_acc:.1f}%",
+        "### 5.2 PDF Extraction",
         "",
-        "### 5.3 RAG Retrieval and Bilingual QA Grounding",
+        f"- Archetypes: {pdf.get('total_archetypes', 'Not run')}",
+        f"- Digital-document field checks: {digital_field_count}",
+        f"- Digital-document field accuracy: {f'{digital_field_accuracy:.4f}' if digital_field_accuracy is not None else 'Not available'}",
+        f"- Page-count accuracy across archetypes: {_pct(_num(pdf_m, 'page_count_accuracy'))}",
+        f"- OCR-required flag accuracy across archetypes: {_pct(_num(pdf_m, 'ocr_detection_accuracy'))}",
+        f"- Scanned-document handling score: {f'{scanned_handling:.4f}' if scanned_handling is not None else 'Not evaluated'}",
         "",
-        f"- **Total QA Pairs Evaluated**: {results['rag_retrieval']['total_queries']}",
-        f"- **Embedding Provider**: {embed_provider}",
-        f"- **Correct-Paper Retrieval Rate**: {paper_rate:.1f}%",
-        f"- **Correct-Page Retrieval Rate**: {page_rate:.1f}%",
-        f"- **Overall Precision@5**: {rag_overall.get('mean_precision_at_5', 0):.4f}",
-        f"- **Overall Recall@5**: {rag_overall.get('mean_recall_at_5', 0):.4f}",
-        f"- **Overall Faithfulness Score**: {faith_rate:.4f}",
-        f"- **Unsupported Claim Rate**: {unsupp_rate:.4f}",
+        "All PDF fixtures are generated programmatically. The evaluator calls the automatic extraction path once per fixture; it does not perform an independent dual-engine comparison. The scanned fixture measures OCR-required detection and graceful handling only. OCR transcription accuracy is not evaluated, and the aggregate `mean_extraction_score` mixes different criteria across archetypes, so it is not presented as digital field accuracy.",
         "",
-        "#### Language Breakdown",
+        "### 5.3 RAG Retrieval",
         "",
-        "| Language | Questions | Correct-Paper Rate | Correct-Page Rate | Precision@5 | Faithfulness |",
-        "| :--- | :--- | :--- | :--- | :--- | :--- |",
-        f"| **English (`en`)** | {rag_en.get('count', 0)} | **{rag_en.get('correct_paper_rate', 0)*100:.1f}%** | **{rag_en.get('correct_page_rate', 0)*100:.1f}%** | **{rag_en.get('mean_precision_at_5', 0):.4f}** | **{rag_en.get('mean_faithfulness', 0):.4f}** |",
-        f"| **Amharic (`am`)** | {rag_am.get('count', 0)} | **{rag_am.get('correct_paper_rate', 0)*100:.1f}%** | **{rag_am.get('correct_page_rate', 0)*100:.1f}%** | **{rag_am.get('mean_precision_at_5', 0):.4f}** | **{rag_am.get('mean_faithfulness', 0):.4f}** |",
+        f"- Benchmark questions: {rag_total}",
+        f"- Evaluated questions: {rag_evaluated}",
+        f"- Excluded questions: {rag_excluded}",
+        f"- Embedding provider: {embedding}",
+        f"- Correct-paper rate: {_pct(correct_paper)}",
+        f"- Correct-page rate: {_pct(correct_page)}",
+        f"- Page precision@5: {_num(rag_m, 'mean_page_precision_at_5'):.4f}",
+        f"- Page recall: {_num(rag_m, 'mean_page_recall'):.4f}",
+        f"- Keyword recall proxy: {_num(rag_m, 'mean_keyword_recall'):.4f}",
+        f"- Ground-truth passage support proxy: {passage_support:.4f}",
+        f"- Unsupported passage proxy: {unsupported_passage:.4f}",
         "",
-        "### 5.4 Research Analysis and Grounding Challenges",
+        "The current RAG benchmark uses MockEmbeddingProvider. It validates indexing/retrieval plumbing with synthetic embeddings; semantic retrieval quality, especially cross-lingual Amharic retrieval, is not validated. Passage support is a lexical overlap proxy, not generated-answer faithfulness.",
         "",
-        f"- **Total Challenge Cases**: {total_cases}",
-        f"- **Passed Cases**: {passed_cases}",
-        f"- **Robustness Score**: **{analysis_robustness:.1f}%**",
-        "  - Case 1: Incompatible metric averaging & dataset segregation -> **PASSED**",
-        "  - Case 2: Contradictory findings & trade-off detection -> **PASSED**",
-        "  - Case 3: Fabricated citation & registry discrepancy quarantine -> **PASSED**",
-        "  - Case 4: Hallucinated synthesis claim rejection -> **PASSED**",
-        "  - Case 5: Insufficient evidence detection & qualified report -> **PASSED**",
+        "| Language | Evaluated questions | Correct-paper rate | Correct-page rate |",
+        "|---|---:|---:|---:|",
+        f"| English | {rag_en.get('count', 0)} | {_pct(_num(rag_en, 'correct_paper_rate'))} | {_pct(_num(rag_en, 'correct_page_rate'))} |",
+        f"| Amharic | {rag_am.get('count', 0)} | {_pct(_num(rag_am, 'correct_paper_rate'))} | {_pct(_num(rag_am, 'correct_page_rate'))} |",
         "",
-        "### 5.5 LangGraph Agentic Workflow Verification",
+        "Excluded questions:",
+    ]
+
+    # The evaluator stores excluded cases in per_query_results,
+    # using evaluation_status and exclusion_reason.
+    excluded = [
+        item for item in rag.get("per_query_results", [])
+        if isinstance(item, dict)
+        and item.get("evaluation_status") == "NOT_EVALUATED"
+    ]
+
+    if excluded:
+        for item in excluded:
+            lines.append(
+                f"- `{item.get('qa_id', 'unknown')}` "
+                f"({item.get('language', 'unknown')}): "
+                f"{item.get('exclusion_reason', 'No reason recorded')}"
+            )
+    else:
+        lines.append("- No excluded questions recorded.")
+
+    lines += [
         "",
-        f"- **Task Success Rate**: **{task_success:.1f}%**",
-        f"- **Retry Rate**: **{retry_rate:.1f}%**",
-        f"- **Unnecessary Tool Call Rate**: **{agent_metrics.get('unnecessary_tool_call_rate', 0):.1f}%**",
-        f"- **Stopping Condition Accuracy**: **{stopping_acc:.1f}%**",
+        "### 5.4 Research Analysis",
         "",
-        "### 5.6 System Reliability and Degraded Mode",
+        f"- Challenge cases passed: {analysis_passed}/{analysis_total}",
+        f"- Challenge-case pass rate: {_pct(_num(analysis, 'robustness_score'))}",
         "",
-        f"- **Fault Tolerance Score**: **{rel_score:.1f}%** ({passed_faults}/{total_faults} fault injections survived)",
-        "- **Degraded Mode Operational**: **Yes** (Deterministic search, parsing, result analysis, and citation formatting continue functioning when LLMs are offline)",
+        "These are component-level challenge tests, not a broad evaluation of research-analysis quality. In particular, the insufficient-evidence case checks the benchmark input count rather than executing the complete agent response, and the contradictory-findings case has a permissive pass condition. The fabricated-citation case tests mocked registry responses. The unsupported-claim case uses a lexical grounding heuristic.",
+        "",
+        "### 5.5 Agentic Workflow",
+        "",
+        f"- Scenarios passed: {agent_passed}/{agent_total}",
+        f"- Scenario pass rate: {_pct(_num(agent, 'task_success_rate'))}",
+        f"- Stopping-condition scenario metric: {_pct(stop_accuracy)}",
+        "",
+        "The six scenarios test selected nodes and routing conditions. They do not constitute six complete end-to-end research tasks. The evaluator's retry rate and unnecessary-tool-call rate are not instrumented measurements and are intentionally omitted from the headline results. The degraded-mode scenario checks benchmark-declared deterministic tools rather than executing each listed tool.",
+        "",
+        "### 5.6 Reliability",
+        "",
+        f"- Specific checks passed: {reliability_passed}/{reliability_total}",
+        f"- Check pass rate: {_pct(reliability_score)}",
+        "",
+        "The checks cover a deterministic search/citation pipeline, partial academic-provider failure with Crossref fallback, corrupted-PDF handling, and blank-query validation. They do not establish general service availability or production reliability.",
         "",
         "---",
         "",
         "## 6. Error and Failure-Mode Analysis",
         "",
-        "1. **OCR Limitation on Degraded Historical Texts**: While scanned raster documents are 100% accurately detected as requiring OCR, local extraction without external heavy OCR vision APIs yields partial text. The system successfully tags status as `PARTIAL` with actionable warnings rather than failing silently or fabricating content.",
-        "2. **Cross-Lingual Embedding Semantic Density**: While mock embeddings verify chunk indexing, live cross-lingual embeddings for Ethiopic script require specialized tokenization to avoid morphological fragmentation. AIRA's dual BPE / SentencePiece handling preserves passage boundaries.",
-        "3. **Registry Asynchrony**: In rare cases where a brand-new preprint is not yet indexed in Crossref, Crossref returns 404 while Semantic Scholar returns metadata. AIRA's multi-provider merge correctly handles partial registry availability without discarding the paper.",
-        "",
-        "---",
+        "1. **Live search quality is unmeasured:** the search benchmark supplies candidates derived from the relevance judgments.",
+        "2. **Scanned-PDF OCR is not implemented:** the evaluation verifies detection and graceful handling, not transcription.",
+        "3. **RAG semantic quality is unmeasured:** mock embeddings verify retrieval plumbing, not semantic or cross-lingual relevance.",
+        "4. **Grounding is approximate:** lexical overlap cannot reliably detect every unsupported scientific claim or semantic contradiction.",
+        "5. **Agentic evaluation is component-level:** node and routing checks do not demonstrate full-task completion, nor do they instrument all tool-use efficiency metrics.",
+        "6. **Small synthetic benchmarks limit generalization:** results should not be interpreted as statistically representative of real research papers or user requests.",
         "",
         "## 7. System Limitations and Recommendations",
         "",
-        "1. **Embedding Model Deployment**: Live deployment should utilize Google's `text-embedding-004` or `multilingual-e5-large` for production vector stores to preserve Amharic syntactic similarity.",
-        "2. **Table Layout Segmentation**: For complex nested tables spanning multiple pages, deep layout-aware parsing (e.g. LayoutLMv3 or Table Transformer) could further refine row-level granularity beyond PyMuPDF table extraction.",
-        "3. **Statistical Significance Extraction**: While AIRA extracts p-values and standard deviations when explicitly stated in paper tables, automated derivation of confidence intervals from raw sample variance remains an area for future enhancement.",
+        "1. Add a held-out search benchmark with independently collected live-provider results and human relevance judgments.",
+        "2. Evaluate extraction on a representative collection of real digital PDFs, and add OCR implementation plus character/word error rate evaluation for scanned documents.",
+        "3. Run RAG evaluation with the production embedding provider and report English and Amharic results separately.",
+        "4. Evaluate generated answers using claim-level evidence attribution and human review; retain lexical overlap only as a lightweight proxy.",
+        "5. Run complete end-to-end agent tasks and instrument actual tool calls, retries, plan changes, and stop reasons.",
+        "6. Expand fault injection to cover timeouts, provider outages, malformed tool outputs, vector-store failures, and recovery behavior.",
         "",
-        "---",
+        "The RAG implementation uses `gemini-embedding-2` in its production configuration, while this evaluation uses mock embeddings. The production embedding model has therefore not been benchmarked here.",
         "",
         "## 8. Regression Testing Verification",
         "",
-        "The complete regression suite verifies backwards compatibility across all prior phases:",
+        "The Phase 9 runner does not execute the full pytest suite or frontend build. Those checks must be run separately and their actual outputs recorded.",
         "",
-        "- **Total Test Cases**: >= 185 unit, integration, and API tests",
-        "- **Passing Status**: 100% Green",
-        "- **Frontend Build**: Next.js 16 production build compiled with 0 errors",
-        "- **Zero API Quota Consumed**: Full reproducibility without external network dependencies",
+        "Previously reported project test result: **197 passed, 7 warnings**. This is a prior test run, not a result generated by this evaluation runner. Re-run the suite after applying changes.",
+        "",
+        "No live LLM quota is required by the offline evaluator fixtures as currently designed. This statement does not imply that every project test or every application workflow is offline.",
         "",
     ]
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+async def _run_one(name: str, evaluator: Any) -> Dict[str, Any]:
+    try:
+        result = await evaluator.run()
+        if not isinstance(result, dict):
+            raise TypeError(f"{name} evaluator returned {type(result).__name__}, expected dict")
+        if "error" in result and len(result) == 1:
+            raise RuntimeError(str(result["error"]))
+        return result
+    except Exception as exc:
+        print(f"[ERROR] {name}: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return {
+            "error": f"{type(exc).__name__}: {exc}",
+            "evaluator_status": "failed",
+        }
 
 
 async def run_all_evaluations() -> Dict[str, Any]:
-    """Execute all domain evaluators and compile results."""
+    """Run all evaluators independently and save complete or partial results."""
     print("=" * 70)
     print("AIRA Phase 9: System Evaluation and Reliability Testing")
     print("=" * 70)
 
+    evaluators = [
+        ("academic_search", "Academic Search", AcademicSearchEvaluator),
+        ("pdf_extraction", "PDF Extraction", PDFExtractionEvaluator),
+        ("rag_retrieval", "RAG Retrieval", RAGEvaluator),
+        ("analysis_comparison", "Research Analysis", AnalysisEvaluator),
+        ("agentic_workflow", "Agentic Workflow", AgenticEvaluator),
+        ("reliability", "Reliability", ReliabilityEvaluator),
+    ]
+
     results: Dict[str, Any] = {
         "timestamp": time.time(),
-        "academic_search": {},
-        "pdf_extraction": {},
-        "rag_retrieval": {},
-        "analysis_comparison": {},
-        "agentic_workflow": {},
-        "reliability": {},
+        "evaluation_status": {},
     }
 
-    # 1. Academic Search
-    print("\n[1/6] Running Academic Search Evaluator...")
-    search_eval = AcademicSearchEvaluator()
-    results["academic_search"] = await search_eval.run()
-    sm = results["academic_search"]["aggregate_metrics"]
-    print(f"      -> P@5: {sm['mean_precision_at_5']:.4f} | R@5: {sm['mean_recall_at_5']:.4f} | MRR: {sm['mrr']:.4f} | nDCG@5: {sm['mean_ndcg_at_5']:.4f}")
+    for index, (key, label, evaluator_class) in enumerate(evaluators, start=1):
+        print(f"\n[{index}/6] Running {label} Evaluator...")
+        result = await _run_one(key, evaluator_class())
+        results[key] = result
+        failed = "error" in result
+        results["evaluation_status"][key] = "failed" if failed else "completed"
+        if failed:
+            print(f"      -> FAILED: {result['error']}")
+        else:
+            print("      -> Completed")
 
-    # 2. PDF Extraction
-    print("\n[2/6] Running PDF Extraction Evaluator...")
-    extract_eval = PDFExtractionEvaluator()
-    results["pdf_extraction"] = await extract_eval.run()
-    em = results["pdf_extraction"]["aggregate_metrics"]
-    print(f"      -> Mean Extraction Score: {em['mean_extraction_score']:.4f} | OCR Detection: {em['ocr_detection_accuracy']*100:.1f}%")
+        # Persist after each evaluator so an interruption does not lose all progress.
+        base_dir = Path(__file__).resolve().parent
+        json_path = base_dir / "evaluation_results.json"
+        json_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
-    # 3. RAG Retrieval & Bilingual QA
-    print("\n[3/6] Running RAG & Bilingual QA Evaluator...")
-    rag_eval = RAGEvaluator()
-    results["rag_retrieval"] = await rag_eval.run()
-    rm = results["rag_retrieval"]["overall_metrics"]
-    print(f"      -> Correct-Paper: {rm.get('correct_paper_rate', 0)*100:.1f}% | Correct-Page: {rm.get('correct_page_rate', 0)*100:.1f}% | Faithfulness: {rm.get('mean_faithfulness', 0):.4f}")
-
-    # 4. Research Analysis & Comparison
-    print("\n[4/6] Running Research Analysis Evaluator...")
-    analysis_eval = AnalysisEvaluator()
-    results["analysis_comparison"] = await analysis_eval.run()
-    am = results["analysis_comparison"]
-    print(f"      -> Cases Passed: {am['passed_cases']}/{am['total_cases']} ({am['robustness_score']*100:.1f}%)")
-
-    # 5. Agentic Workflow
-    print("\n[5/6] Running Agentic Workflow Evaluator...")
-    agent_eval = AgenticEvaluator()
-    results["agentic_workflow"] = await agent_eval.run()
-    gm = results["agentic_workflow"]
-    print(f"      -> Task Success Rate: {gm['task_success_rate']*100:.1f}% | Stopping Bounds: {gm['stopping_condition_accuracy']*100:.1f}%")
-
-    # 6. Reliability & Degraded Mode
-    print("\n[6/6] Running Reliability & Degraded Mode Evaluator...")
-    rel_eval = ReliabilityEvaluator()
-    results["reliability"] = await rel_eval.run()
-    rlm = results["reliability"]
-    print(f"      -> Fault Injections Passed: {rlm['passed_fault_injections']}/{rlm['total_fault_injections']} ({rlm['reliability_score']*100:.1f}%)")
-
-    # Export machine-readable JSON
     base_dir = Path(__file__).resolve().parent
     json_path = base_dir / "evaluation_results.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
-    print(f"\n[+] Saved machine-readable results to: {json_path}")
-
-    # Export markdown report
     md_path = base_dir / "evaluation_report.md"
+    json_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
     generate_markdown_report(results, md_path)
-    print(f"[+] Saved comprehensive academic report to: {md_path}")
 
-    print("\n" + "=" * 70)
-    print("ALL EVALUATIONS COMPLETED SUCCESSFULLY")
-    print("=" * 70)
+    completed = sum(1 for v in results["evaluation_status"].values() if v == "completed")
+    print(f"\nEvaluators completed: {completed}/6")
+    print(f"JSON: {json_path}")
+    print(f"Report: {md_path}")
+    print("Evaluation run finished; inspect evaluation_status for failures.")
     return results
 
 

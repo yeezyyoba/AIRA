@@ -97,7 +97,7 @@ def main() -> int:
     print("Phase 1: Architecture and Project Setup Status: READY")
     print("=" * 60)
     print("Backend Framework:   FastAPI + Uvicorn")
-    print("Planned Frontend:    Next.js / React (Separate component)")
+    print("Frontend:            Next.js / React (frontend/)")
     print("Directory structure: VERIFIED")
     print("Environment config:  VERIFIED (.env.example)")
     print("Dependencies spec:   VERIFIED (requirements.txt)")
