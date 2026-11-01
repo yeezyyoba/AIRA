@@ -1,0 +1,87 @@
+[
+  {
+    "case_id": "ANALYSIS_01_INCOMPATIBLE_METRICS",
+    "description": "Two papers reporting F1 but on different datasets and incompatible averaging protocols.",
+    "input_metrics": [
+      {
+        "paper_id": "paper_ner_01",
+        "model_name": "BiLSTM-CRF",
+        "metric_name": "f1",
+        "variant": "macro",
+        "dataset_name": "AmhNER-v1",
+        "dataset_split": "test",
+        "raw_value": 78.4,
+        "normalized_value": 78.4
+      },
+      {
+        "paper_id": "paper_ner_02",
+        "model_name": "AfroXLMR",
+        "metric_name": "f1",
+        "variant": "micro",
+        "dataset_name": "EthioNewsNER-2022",
+        "dataset_split": "validation",
+        "raw_value": 86.2,
+        "normalized_value": 86.2
+      }
+    ],
+    "expected_compatibility": "INCOMPATIBLE",
+    "expected_reason_keywords": [
+      "different datasets",
+      "variant mismatch",
+      "split"
+    ]
+  },
+  {
+    "case_id": "ANALYSIS_02_CONTRADICTORY_FINDINGS",
+    "description": "Paper A reports BPE tokenization degrades Amharic NMT; Paper B reports BPE tokenization improves Amharic NMT.",
+    "paper_claims": [
+      {
+        "paper_id": "paper_mt_a",
+        "claim": "Subword BPE tokenization causes severe morphological fragmentation, degrading BLEU by 2.4 points compared to word-level models.",
+        "evidence_passage": "We observe that BPE subword segmentation degrades translation quality by 2.4 BLEU due to over-fragmentation of Ethiopic verb stems."
+      },
+      {
+        "paper_id": "paper_mt_b",
+        "claim": "BPE segmentation with 16k merge operations significantly mitigates out-of-vocabulary rate and improves BLEU by 3.1 points.",
+        "evidence_passage": "Subword modeling with 16,000 BPE operations achieved a 3.1 BLEU improvement over word-level baselines by resolving rare morphemes."
+      }
+    ],
+    "expected_detection": "CONTRADICTION_FLAGGED",
+    "expected_tradeoff_identified": true
+  },
+  {
+    "case_id": "ANALYSIS_03_FABRICATED_CITATION",
+    "description": "Adversarial paper input with fabricated DOI, invented authors, and non-existent publication year.",
+    "input_paper": {
+      "paper_id": "fake_paper_999",
+      "title": "Quantum Language Models for 100% Zero-Shot Amharic Translation",
+      "authors": [
+        "Fake Author McHallucination"
+      ],
+      "year": 2045,
+      "doi": "10.9999/fake.doi.12345"
+    },
+    "expected_validation_status": "CONFLICTING",
+    "expected_quarantine": true
+  },
+  {
+    "case_id": "ANALYSIS_04_UNSUPPORTED_SYNTHESIS_CLAIM",
+    "description": "An LLM-generated synthesis claim asserting state-of-the-art results that appear nowhere in the retrieved paper text.",
+    "retrieved_evidence": [
+      "We evaluate our model on 50,000 sentence pairs and obtain 31.2 BLEU."
+    ],
+    "synthetic_claim": "The proposed architecture sets a new world record on WMT English-Amharic, outperforming Google Translate by 15 BLEU points.",
+    "expected_claim_status": "UNSUPPORTED",
+    "expected_action": "REJECT_OR_FLAG"
+  },
+  {
+    "case_id": "ANALYSIS_05_INSUFFICIENT_EVIDENCE",
+    "description": "Query requesting OCR methodology comparison when only 1 OCR paper exists in the corpus.",
+    "corpus_paper_ids": [
+      "eval_pdf_scanned_04"
+    ],
+    "research_question": "Compare convolutional OCR architectures against vision transformers for historical Ethiopic manuscripts",
+    "expected_critique_status": "INSUFFICIENT_EVIDENCE",
+    "expected_fallback": "QUALIFIED_PARTIAL_REPORT"
+  }
+]

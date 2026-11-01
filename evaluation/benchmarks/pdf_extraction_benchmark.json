@@ -1,0 +1,162 @@
+[
+  {
+    "paper_id": "eval_pdf_digital_01",
+    "category": "CLEAN_DIGITAL_SINGLE_COLUMN",
+    "ground_truth": {
+      "title": "Neural Machine Translation for Low-Resource Amharic: An Empirical Study",
+      "authors": [
+        "Abebe Bikila",
+        "Almaz Worku"
+      ],
+      "publication_year": 2024,
+      "abstract_contains": [
+        "cross-lingual transfer",
+        "morphological complexity",
+        "low-resource Amharic"
+      ],
+      "methodology_contains": [
+        "12-layer Transformer",
+        "Byte-Pair Encoding",
+        "back-translation"
+      ],
+      "results_contains": [
+        "31.2 BLEU score",
+        "50,000 sentence pairs"
+      ],
+      "extracted_metrics": [
+        {
+          "metric_name": "bleu",
+          "raw_value": 31.2,
+          "normalized_value": 31.2,
+          "dataset_name": "Amharic-English Parallel Corpus",
+          "dataset_split": "test",
+          "page_number": 3
+        }
+      ],
+      "page_count": 4,
+      "ocr_required": false
+    }
+  },
+  {
+    "paper_id": "eval_pdf_twocolumn_02",
+    "category": "TWO_COLUMN_CONFERENCE_PAPER",
+    "ground_truth": {
+      "title": "Transformer-Based Named Entity Recognition for Amharic Social Media Texts",
+      "authors": [
+        "Daniel Lemma",
+        "Hanan Mohammed",
+        "Solomon Teferra"
+      ],
+      "publication_year": 2023,
+      "abstract_contains": [
+        "informal social media",
+        "orthographic variation",
+        "nested entities"
+      ],
+      "methodology_contains": [
+        "AfroXLMR backbone",
+        "CRF sequence layer",
+        "morphological feature injection"
+      ],
+      "results_contains": [
+        "Macro-F1 of 84.6%",
+        "annotated corpus of 12,500 posts"
+      ],
+      "extracted_metrics": [
+        {
+          "metric_name": "macro_f1",
+          "raw_value": 84.6,
+          "normalized_value": 84.6,
+          "dataset_name": "AmhSocialNER-v2",
+          "dataset_split": "test",
+          "page_number": 5
+        }
+      ],
+      "page_count": 6,
+      "ocr_required": false
+    }
+  },
+  {
+    "paper_id": "eval_pdf_complextable_03",
+    "category": "COMPLEX_NUMERICAL_TABLES",
+    "ground_truth": {
+      "title": "Comparative Evaluation of Morphological Segmenters for Ethiopic Script Text Classification",
+      "authors": [
+        "Yared Kassahun",
+        "Betelehem Girma"
+      ],
+      "publication_year": 2022,
+      "abstract_contains": [
+        "unsupervised segmentation",
+        "root-and-pattern morphology",
+        "text classification"
+      ],
+      "methodology_contains": [
+        "Morfessor baseline",
+        "BPE 32k tokens",
+        "convolutional neural network classifier"
+      ],
+      "results_contains": [
+        "Accuracy 89.4%",
+        "Macro-F1 87.2%",
+        "weighted F1 88.9%"
+      ],
+      "extracted_metrics": [
+        {
+          "metric_name": "accuracy",
+          "raw_value": 89.4,
+          "normalized_value": 89.4,
+          "dataset_name": "AmhNewsCorp-2022",
+          "dataset_split": "test",
+          "page_number": 4
+        },
+        {
+          "metric_name": "macro_f1",
+          "raw_value": 87.2,
+          "normalized_value": 87.2,
+          "dataset_name": "AmhNewsCorp-2022",
+          "dataset_split": "test",
+          "page_number": 4
+        }
+      ],
+      "page_count": 5,
+      "ocr_required": false
+    }
+  },
+  {
+    "paper_id": "eval_pdf_scanned_04",
+    "category": "SCANNED_RASTER_OCR_REQUIRED",
+    "ground_truth": {
+      "title": "Historical Geez and Amharic Manuscript Character Recognition Using Convolutional Recurrent Networks",
+      "authors": [
+        "Teshome Assefa"
+      ],
+      "publication_year": 2020,
+      "abstract_contains": [
+        "degraded parchment",
+        "ink bleed-through",
+        "line segmentation"
+      ],
+      "methodology_contains": [
+        "CRNN with CTC loss",
+        "synthetic ink degradation augmentations"
+      ],
+      "results_contains": [
+        "Character Error Rate of 6.8%",
+        "Word Error Rate of 14.2%"
+      ],
+      "extracted_metrics": [
+        {
+          "metric_name": "character_error_rate",
+          "raw_value": 6.8,
+          "normalized_value": 6.8,
+          "dataset_name": "GeezManuscriptDB-v1",
+          "dataset_split": "test",
+          "page_number": 7
+        }
+      ],
+      "page_count": 8,
+      "ocr_required": true
+    }
+  }
+]

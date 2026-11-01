@@ -1,0 +1,40 @@
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+
+# Python Caches & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Application Databases & Vector Stores
+*.db
+*.sqlite
+*.sqlite3
+data/chroma/*
+!data/chroma/.gitkeep
+
+# Research Data & Artifacts
+data/papers/*
+!data/papers/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/reports/*
+!data/reports/.gitkeep
+
+# IDE & OS Files
+.DS_Store
+.idea/
+.vscode/
+*.swp

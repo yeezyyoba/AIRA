@@ -1,0 +1,114 @@
+[
+  {
+    "qa_id": "RAG_EN_01",
+    "language": "en",
+    "question": "What BLEU score did the neural machine translation model achieve for Amharic?",
+    "target_paper_id": "amharic_nmt_2024",
+    "expected_pages": [
+      3
+    ],
+    "expected_answer_keywords": [
+      "31.2",
+      "bleu"
+    ],
+    "ground_truth_passage": "The proposed 12-layer cross-lingual Transformer achieved a BLEU score of 31.2 on the held-out test split."
+  },
+  {
+    "qa_id": "RAG_EN_02",
+    "language": "en",
+    "question": "How many parallel sentence pairs were included in the training dataset?",
+    "target_paper_id": "amharic_nmt_2024",
+    "expected_pages": [
+      2
+    ],
+    "expected_answer_keywords": [
+      "50,000",
+      "sentence pairs"
+    ],
+    "ground_truth_passage": "Experiments were performed using a verified parallel corpus of 50,000 sentence pairs extracted from aligned public domain publications."
+  },
+  {
+    "qa_id": "RAG_EN_03",
+    "language": "en",
+    "question": "What neural architecture was employed for sequence transduction?",
+    "target_paper_id": "amharic_nmt_2024",
+    "expected_pages": [
+      2
+    ],
+    "expected_answer_keywords": [
+      "12-layer",
+      "transformer",
+      "cross-lingual"
+    ],
+    "ground_truth_passage": "Our architecture utilizes a 12-layer cross-lingual Transformer with 8 attention heads and 512 embedding dimensions."
+  },
+  {
+    "qa_id": "RAG_AM_01",
+    "language": "am",
+    "question": "\u12e8\u12a0\u121b\u122d\u129b \u12e8\u1290\u122d\u126d \u121b\u123d\u1295 \u1275\u122d\u1309\u121d \u121e\u12f4\u120d \u12eb\u1235\u1218\u12d8\u1308\u1260\u12cd \u12e8BLEU \u12cd\u1324\u1275 \u1235\u1295\u1275 \u1290\u12cd?",
+    "target_paper_id": "amharic_nmt_2024",
+    "expected_pages": [
+      3
+    ],
+    "expected_answer_keywords": [
+      "31.2",
+      "BLEU"
+    ],
+    "ground_truth_passage": "\u12e8\u1240\u1228\u1260\u12cd \u1263\u1208 12-\u12f0\u1228\u1303 \u1275\u122b\u1295\u1235\u134e\u122d\u1218\u122d \u121e\u12f4\u120d \u1260\u1348\u1270\u1293 \u1218\u1228\u1303\u12cd \u120b\u12ed 31.2 \u12e8BLEU \u12cd\u1324\u1275 \u12a0\u1235\u1218\u12dd\u130d\u1267\u120d\u1362"
+  },
+  {
+    "qa_id": "RAG_AM_02",
+    "language": "am",
+    "question": "\u1325\u1293\u1271 \u12e8\u1270\u1320\u1240\u1218\u12cd \u1275\u12ed\u12e9 \u12e8\u1218\u1228\u1303 \u1235\u1265\u1235\u1265 \u1235\u1295\u1275 \u12d3\u1228\u134d\u1270 \u1290\u1308\u122e\u127d\u1295 \u12ed\u12df\u120d?",
+    "target_paper_id": "amharic_nmt_2024",
+    "expected_pages": [
+      2
+    ],
+    "expected_answer_keywords": [
+      "50,000"
+    ],
+    "ground_truth_passage": "\u1219\u12a8\u122b\u12cd \u12e8\u1270\u12ab\u1204\u12f0\u12cd 50,000 \u1275\u12ed\u12e9 \u12d3\u1228\u134d\u1270 \u1290\u1308\u122e\u127d\u1295 \u1260\u12eb\u12d8 \u12e8\u12a0\u121b\u122d\u129b-\u12a5\u1295\u130d\u120a\u12dd\u129b \u12e8\u1218\u1228\u1303 \u1235\u1265\u1235\u1265 \u120b\u12ed \u1290\u12cd\u1362"
+  },
+  {
+    "qa_id": "RAG_EN_04",
+    "language": "en",
+    "question": "What Macro-F1 score did the AfroXLMR-CRF model achieve on AmhSocialNER?",
+    "target_paper_id": "eval_pdf_twocolumn_02",
+    "expected_pages": [
+      5
+    ],
+    "expected_answer_keywords": [
+      "84.6%",
+      "macro-f1"
+    ],
+    "ground_truth_passage": "The AfroXLMR-CRF sequence model reached a Macro-F1 of 84.6% on the AmhSocialNER test benchmark."
+  },
+  {
+    "qa_id": "RAG_EN_05",
+    "language": "en",
+    "question": "What Character Error Rate was reported for historical Ethiopic manuscript OCR?",
+    "target_paper_id": "eval_pdf_scanned_04",
+    "expected_pages": [
+      7
+    ],
+    "expected_answer_keywords": [
+      "6.8%",
+      "character error rate"
+    ],
+    "ground_truth_passage": "On severely degraded parchment folios, our CRNN achieved a Character Error Rate of 6.8%."
+  },
+  {
+    "qa_id": "RAG_AM_03",
+    "language": "am",
+    "question": "\u12e8\u1273\u122a\u12ab\u12ca \u1265\u122b\u1293\u12ce\u127d \u133d\u1211\u134d \u1295\u1263\u1265 (OCR) \u12eb\u1235\u1218\u12d8\u1308\u1260\u12cd \u12e8\u134a\u12f0\u120b\u1275 \u1235\u1205\u1270\u1275 \u1218\u1320\u1295 (CER) \u1235\u1295\u1275 \u1290\u12cd?",
+    "target_paper_id": "eval_pdf_scanned_04",
+    "expected_pages": [
+      7
+    ],
+    "expected_answer_keywords": [
+      "6.8%",
+      "CER"
+    ],
+    "ground_truth_passage": "\u1260\u1273\u122a\u12ab\u12ca \u12e8\u1265\u122b\u1293 \u133d\u1211\u134e\u127d \u120b\u12ed \u12e8\u1270\u1218\u12d8\u1308\u1260\u12cd \u12e8\u134a\u12f0\u120b\u1275 \u1235\u1205\u1270\u1275 \u1218\u1320\u1295 (Character Error Rate) 6.8% \u1290\u12cd\u1362"
+  }
+]

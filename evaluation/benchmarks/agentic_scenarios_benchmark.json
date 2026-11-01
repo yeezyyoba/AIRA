@@ -1,0 +1,54 @@
+[
+  {
+    "scenario_id": "AGENT_01_CLARIFICATION",
+    "name": "Under-specified Query Halts for User Clarification",
+    "input_query": "nlp",
+    "expected_initial_node": "check_information",
+    "expected_branch": "ask_user",
+    "expected_status": "USER_CLARIFICATION_REQUIRED",
+    "requires_user_clarification": true
+  },
+  {
+    "scenario_id": "AGENT_02_PLAN_REVISION",
+    "name": "Evidence Deficiency Triggers Plan Revision",
+    "input_query": "Evaluate zero-shot cross-lingual transfer for low-resource Ethiopic languages",
+    "expected_loop": "reflect_and_revise",
+    "expected_adapted_plan": true
+  },
+  {
+    "scenario_id": "AGENT_03_RETRY_RECOVERY",
+    "name": "Tool Failure Triggers Parameter Reformulation and Recovery",
+    "failing_tool": "search_academic_papers",
+    "failure_type": "TIMEOUT",
+    "max_allowed_retries": 2,
+    "expected_recovery": true
+  },
+  {
+    "scenario_id": "AGENT_04_RETRY_EXHAUSTION",
+    "name": "Exhausted Retries Terminate Gracefully Without Infinite Loop",
+    "failing_tool": "search_academic_papers",
+    "injected_failures": 3,
+    "expected_terminal_status": "RETRY_EXHAUSTED",
+    "loop_detected": false
+  },
+  {
+    "scenario_id": "AGENT_05_MAX_STEPS",
+    "name": "Graph Step Bound Enforced Cleanly",
+    "max_steps": 20,
+    "expected_terminal_status": "MAX_STEPS_REACHED",
+    "partial_report_generated": true
+  },
+  {
+    "scenario_id": "AGENT_06_DEGRADED_MODE",
+    "name": "LLM Outage Executes Degraded Deterministic Operations",
+    "primary_llm_online": false,
+    "fallback_llm_online": false,
+    "expected_degraded_flag": true,
+    "deterministic_tools_executed": [
+      "search_academic_papers",
+      "read_research_paper",
+      "analyze_experimental_results",
+      "generate_citation"
+    ]
+  }
+]

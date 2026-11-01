@@ -1,0 +1,628 @@
+{
+  "timestamp": 1793533883.019142,
+  "academic_search": {
+    "evaluator": "AcademicSearchEvaluator",
+    "benchmark_dataset": "academic_search_benchmark.json",
+    "total_queries": 10,
+    "aggregate_metrics": {
+      "mean_precision_at_5": 0.62,
+      "mean_recall_at_5": 1.0,
+      "mean_precision_at_10": 0.31,
+      "mean_recall_at_10": 1.0,
+      "mrr": 1.0,
+      "mean_ndcg_at_5": 1.0,
+      "mean_ndcg_at_10": 1.0
+    },
+    "per_query_results": [
+      {
+        "query_id": "AS_01",
+        "domain": "Amharic Sentiment Analysis",
+        "query": "Amharic sentiment analysis social media benchmark datasets",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "yirgu_amharic_aspect_sentiment_2022",
+          "amharic_sentiment_corpus_2021",
+          "sebsibe_multilingual_sentiment_2023",
+          "african_nlp_benchmark_2023",
+          "general_nlp_survey_2020"
+        ],
+        "relevant_count": 3,
+        "precision_at_5": 0.6,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.3,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_02",
+        "domain": "Amharic Named Entity Recognition",
+        "query": "Amharic named entity recognition CRF and deep neural models",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "ethiopian_languages_ner_2022",
+          "amharic_ner_crf_bilstm_2019",
+          "african_ner_survey_2023",
+          "cross_lingual_transfer_2021",
+          "speech_synthesis_amharic_2020"
+        ],
+        "relevant_count": 3,
+        "precision_at_5": 0.6,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.3,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_03",
+        "domain": "Machine Translation",
+        "query": "Amharic English neural machine translation low resource parallel corpus",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "tesfaye_amharic_en_nmt_2021",
+          "amharic_nmt_2024",
+          "low_resource_african_mt_2022",
+          "multilingual_nmt_eval_2023",
+          "image_captioning_2020"
+        ],
+        "relevant_count": 3,
+        "precision_at_5": 0.6,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.3,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_04",
+        "domain": "Handwritten Amharic OCR",
+        "query": "Handwritten Amharic character recognition historical manuscripts OCR",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "ethiopic_script_segmentation_ocr_2022",
+          "amharic_handwritten_ocr_cnn_2020",
+          "historical_geez_amharic_ocr_2023",
+          "arabic_script_ocr_2019",
+          "english_audio_recognition_2021"
+        ],
+        "relevant_count": 3,
+        "precision_at_5": 0.6,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.3,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_05",
+        "domain": "Low-Resource Language Modeling",
+        "query": "Low resource language modeling for Ethiopic script morphologically rich languages",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "horn_of_africa_lm_benchmark_2023",
+          "amharic_morphological_lm_2021",
+          "bantu_ethiopic_comparative_lm_2022",
+          "tokenization_low_resource_2023",
+          "quantum_nlp_foundations_2021"
+        ],
+        "relevant_count": 4,
+        "precision_at_5": 0.8,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.4,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_06",
+        "domain": "Multilingual Language Models",
+        "query": "AfroXLMR and multilingual transformer fine tuning for Amharic NLP",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "multilingual_bert_amharic_transfer_2021",
+          "afro_xlmr_evaluation_amharic_2022",
+          "cross_lingual_african_benchmarks_2023",
+          "xlmr_base_fine_tuning_2020",
+          "reinforcement_learning_robotics_2022"
+        ],
+        "relevant_count": 3,
+        "precision_at_5": 0.6,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.3,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_07",
+        "domain": "Amharic Sentiment Analysis",
+        "query": "Aspect based sentiment analysis for Amharic e-commerce reviews",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "yirgu_amharic_aspect_sentiment_2022",
+          "amharic_sentiment_corpus_2021",
+          "multilingual_aspect_sentiment_2023",
+          "topic_modeling_amharic_2019",
+          "protein_folding_transformers_2023"
+        ],
+        "relevant_count": 2,
+        "precision_at_5": 0.4,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.2,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_08",
+        "domain": "Amharic Named Entity Recognition",
+        "query": "Transformer based named entity recognition for low resource Ethiopian languages",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "ethiopian_languages_ner_2022",
+          "african_ner_survey_2023",
+          "amharic_ner_crf_bilstm_2019",
+          "mbert_tokenization_ethiopic_2021",
+          "graph_neural_networks_circuits_2022"
+        ],
+        "relevant_count": 3,
+        "precision_at_5": 0.6,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.3,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_09",
+        "domain": "Machine Translation",
+        "query": "Subword tokenization and back-translation for English-Amharic NMT",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "tesfaye_amharic_en_nmt_2021",
+          "amharic_nmt_2024",
+          "low_resource_african_mt_2022",
+          "bpe_tokenization_african_nlp_2021",
+          "dns_network_routing_2020"
+        ],
+        "relevant_count": 4,
+        "precision_at_5": 0.8,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.4,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      },
+      {
+        "query_id": "AS_10",
+        "domain": "Handwritten Amharic OCR",
+        "query": "Deep convolutional recurrent neural networks for Ethiopic handwritten manuscript OCR",
+        "retrieved_count": 5,
+        "retrieved_ids": [
+          "ethiopic_script_segmentation_ocr_2022",
+          "amharic_handwritten_ocr_cnn_2020",
+          "historical_geez_amharic_ocr_2023",
+          "arabic_handwritten_crnn_2021",
+          "autonomous_vehicle_slam_2021"
+        ],
+        "relevant_count": 3,
+        "precision_at_5": 0.6,
+        "recall_at_5": 1.0,
+        "precision_at_10": 0.3,
+        "recall_at_10": 1.0,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_5": 1.0,
+        "ndcg_at_10": 1.0
+      }
+    ]
+  },
+  "pdf_extraction": {
+    "evaluator": "PDFExtractionEvaluator",
+    "benchmark_dataset": "pdf_extraction_benchmark.json",
+    "total_archetypes": 4,
+    "aggregate_metrics": {
+      "mean_extraction_score": 0.625,
+      "ocr_detection_accuracy": 1.0,
+      "page_count_accuracy": 1.0
+    },
+    "per_archetype_results": [
+      {
+        "paper_id": "eval_pdf_digital_01",
+        "category": "CLEAN_DIGITAL_SINGLE_COLUMN",
+        "status": "SUCCESS",
+        "extraction_method": "pymupdf",
+        "page_count_actual": 4,
+        "page_count_expected": 4,
+        "page_count_match": true,
+        "ocr_required_actual": false,
+        "ocr_required_expected": false,
+        "ocr_flag_match": true,
+        "field_scores": {
+          "title": 1.0,
+          "authors": 0.0,
+          "publication_year": 1.0,
+          "abstract": 1.0,
+          "methodology": 1.0,
+          "results": 0.0
+        },
+        "archetype_score": 0.6667
+      },
+      {
+        "paper_id": "eval_pdf_twocolumn_02",
+        "category": "TWO_COLUMN_CONFERENCE_PAPER",
+        "status": "SUCCESS",
+        "extraction_method": "pymupdf",
+        "page_count_actual": 6,
+        "page_count_expected": 6,
+        "page_count_match": true,
+        "ocr_required_actual": false,
+        "ocr_required_expected": false,
+        "ocr_flag_match": true,
+        "field_scores": {
+          "title": 1.0,
+          "authors": 0.0,
+          "publication_year": 1.0,
+          "abstract": 1.0,
+          "methodology": 1.0,
+          "results": 1.0
+        },
+        "archetype_score": 0.8333
+      },
+      {
+        "paper_id": "eval_pdf_complextable_03",
+        "category": "COMPLEX_NUMERICAL_TABLES",
+        "status": "SUCCESS",
+        "extraction_method": "pymupdf",
+        "page_count_actual": 5,
+        "page_count_expected": 5,
+        "page_count_match": true,
+        "ocr_required_actual": false,
+        "ocr_required_expected": false,
+        "ocr_flag_match": true,
+        "field_scores": {
+          "title": 1.0,
+          "authors": 0.0,
+          "publication_year": 1.0,
+          "abstract": 1.0,
+          "methodology": 0.0,
+          "results": 0.0
+        },
+        "archetype_score": 0.5
+      },
+      {
+        "paper_id": "eval_pdf_scanned_04",
+        "category": "SCANNED_RASTER_OCR_REQUIRED",
+        "status": "SCANNED_NEEDS_OCR",
+        "extraction_method": "pymupdf",
+        "page_count_actual": 8,
+        "page_count_expected": 8,
+        "page_count_match": true,
+        "ocr_required_actual": true,
+        "ocr_required_expected": true,
+        "ocr_flag_match": true,
+        "field_scores": {
+          "ocr_detection": 1.0,
+          "graceful_handling": 0.0
+        },
+        "archetype_score": 0.5
+      }
+    ]
+  },
+  "rag_retrieval": {
+    "evaluator": "RAGEvaluator",
+    "benchmark_dataset": "rag_qa_benchmark.json",
+    "embedding_provider_evaluated": "MockEmbeddingProvider (Offline Zero-Quota Verification)",
+    "live_gemini_embedding_configured": true,
+    "total_queries": 8,
+    "overall_metrics": {
+      "count": 8,
+      "correct_paper_rate": 0.625,
+      "correct_page_rate": 0.375,
+      "mean_precision_at_5": 0.075,
+      "mean_recall_at_5": 0.375,
+      "mean_keyword_recall": 0.375,
+      "mean_faithfulness": 0.625,
+      "mean_unsupported_rate": 0.375
+    },
+    "english_metrics": {
+      "count": 5,
+      "correct_paper_rate": 0.6,
+      "correct_page_rate": 0.4,
+      "mean_precision_at_5": 0.08,
+      "mean_recall_at_5": 0.4,
+      "mean_keyword_recall": 0.4,
+      "mean_faithfulness": 0.8,
+      "mean_unsupported_rate": 0.2
+    },
+    "amharic_metrics": {
+      "count": 3,
+      "correct_paper_rate": 0.6667,
+      "correct_page_rate": 0.3333,
+      "mean_precision_at_5": 0.0667,
+      "mean_recall_at_5": 0.3333,
+      "mean_keyword_recall": 0.3333,
+      "mean_faithfulness": 0.3333,
+      "mean_unsupported_rate": 0.6667
+    },
+    "per_query_results": [
+      {
+        "qa_id": "RAG_EN_01",
+        "language": "en",
+        "question": "What BLEU score did the neural machine translation model achieve for Amharic?",
+        "target_paper_id": "amharic_nmt_2024",
+        "expected_pages": [
+          3
+        ],
+        "retrieved_count": 5,
+        "correct_paper": true,
+        "correct_page": false,
+        "precision_at_5": 0.0,
+        "recall_at_5": 0.0,
+        "keyword_recall": 0.0,
+        "faithfulness": 1.0,
+        "unsupported_rate": 0.0
+      },
+      {
+        "qa_id": "RAG_EN_02",
+        "language": "en",
+        "question": "How many parallel sentence pairs were included in the training dataset?",
+        "target_paper_id": "amharic_nmt_2024",
+        "expected_pages": [
+          2
+        ],
+        "retrieved_count": 5,
+        "correct_paper": true,
+        "correct_page": true,
+        "precision_at_5": 0.2,
+        "recall_at_5": 1.0,
+        "keyword_recall": 1.0,
+        "faithfulness": 1.0,
+        "unsupported_rate": 0.0
+      },
+      {
+        "qa_id": "RAG_EN_03",
+        "language": "en",
+        "question": "What neural architecture was employed for sequence transduction?",
+        "target_paper_id": "amharic_nmt_2024",
+        "expected_pages": [
+          2
+        ],
+        "retrieved_count": 5,
+        "correct_paper": true,
+        "correct_page": true,
+        "precision_at_5": 0.2,
+        "recall_at_5": 1.0,
+        "keyword_recall": 1.0,
+        "faithfulness": 1.0,
+        "unsupported_rate": 0.0
+      },
+      {
+        "qa_id": "RAG_AM_01",
+        "language": "am",
+        "question": "\u12e8\u12a0\u121b\u122d\u129b \u12e8\u1290\u122d\u126d \u121b\u123d\u1295 \u1275\u122d\u1309\u121d \u121e\u12f4\u120d \u12eb\u1235\u1218\u12d8\u1308\u1260\u12cd \u12e8BLEU \u12cd\u1324\u1275 \u1235\u1295\u1275 \u1290\u12cd?",
+        "target_paper_id": "amharic_nmt_2024",
+        "expected_pages": [
+          3
+        ],
+        "retrieved_count": 5,
+        "correct_paper": true,
+        "correct_page": true,
+        "precision_at_5": 0.2,
+        "recall_at_5": 1.0,
+        "keyword_recall": 1.0,
+        "faithfulness": 1.0,
+        "unsupported_rate": 0.0
+      },
+      {
+        "qa_id": "RAG_AM_02",
+        "language": "am",
+        "question": "\u1325\u1293\u1271 \u12e8\u1270\u1320\u1240\u1218\u12cd \u1275\u12ed\u12e9 \u12e8\u1218\u1228\u1303 \u1235\u1265\u1235\u1265 \u1235\u1295\u1275 \u12d3\u1228\u134d\u1270 \u1290\u1308\u122e\u127d\u1295 \u12ed\u12df\u120d?",
+        "target_paper_id": "amharic_nmt_2024",
+        "expected_pages": [
+          2
+        ],
+        "retrieved_count": 5,
+        "correct_paper": true,
+        "correct_page": false,
+        "precision_at_5": 0.0,
+        "recall_at_5": 0.0,
+        "keyword_recall": 0.0,
+        "faithfulness": 0.0,
+        "unsupported_rate": 1.0
+      },
+      {
+        "qa_id": "RAG_EN_04",
+        "language": "en",
+        "question": "What Macro-F1 score did the AfroXLMR-CRF model achieve on AmhSocialNER?",
+        "target_paper_id": "eval_pdf_twocolumn_02",
+        "expected_pages": [
+          5
+        ],
+        "retrieved_count": 5,
+        "correct_paper": false,
+        "correct_page": false,
+        "precision_at_5": 0.0,
+        "recall_at_5": 0.0,
+        "keyword_recall": 0.0,
+        "faithfulness": 1.0,
+        "unsupported_rate": 0.0
+      },
+      {
+        "qa_id": "RAG_EN_05",
+        "language": "en",
+        "question": "What Character Error Rate was reported for historical Ethiopic manuscript OCR?",
+        "target_paper_id": "eval_pdf_scanned_04",
+        "expected_pages": [
+          7
+        ],
+        "retrieved_count": 5,
+        "correct_paper": false,
+        "correct_page": false,
+        "precision_at_5": 0.0,
+        "recall_at_5": 0.0,
+        "keyword_recall": 0.0,
+        "faithfulness": 0.0,
+        "unsupported_rate": 1.0
+      },
+      {
+        "qa_id": "RAG_AM_03",
+        "language": "am",
+        "question": "\u12e8\u1273\u122a\u12ab\u12ca \u1265\u122b\u1293\u12ce\u127d \u133d\u1211\u134d \u1295\u1263\u1265 (OCR) \u12eb\u1235\u1218\u12d8\u1308\u1260\u12cd \u12e8\u134a\u12f0\u120b\u1275 \u1235\u1205\u1270\u1275 \u1218\u1320\u1295 (CER) \u1235\u1295\u1275 \u1290\u12cd?",
+        "target_paper_id": "eval_pdf_scanned_04",
+        "expected_pages": [
+          7
+        ],
+        "retrieved_count": 5,
+        "correct_paper": false,
+        "correct_page": false,
+        "precision_at_5": 0.0,
+        "recall_at_5": 0.0,
+        "keyword_recall": 0.0,
+        "faithfulness": 0.0,
+        "unsupported_rate": 1.0
+      }
+    ]
+  },
+  "analysis_comparison": {
+    "evaluator": "AnalysisEvaluator",
+    "benchmark_dataset": "analysis_comparison_benchmark.json",
+    "total_cases": 5,
+    "passed_cases": 5,
+    "robustness_score": 1.0,
+    "case_results": [
+      {
+        "case_id": "ANALYSIS_01_INCOMPATIBLE_METRICS",
+        "passed": true,
+        "incompatible_detected": true,
+        "ranking_suppressed": true,
+        "tables_count": 1
+      },
+      {
+        "case_id": "ANALYSIS_02_CONTRADICTORY_FINDINGS",
+        "passed": true,
+        "tradeoff_detected": true,
+        "unverified_flags": []
+      },
+      {
+        "case_id": "ANALYSIS_03_FABRICATED_CITATION",
+        "passed": true,
+        "status": "UNVERIFIED",
+        "explanation": "No matching records found in checked registries (crossref, openalex, semantic_scholar). This does NOT imply the paper metadata is false; the paper may be very recent, unindexed, or proprietary."
+      },
+      {
+        "case_id": "ANALYSIS_04_UNSUPPORTED_SYNTHESIS_CLAIM",
+        "passed": true,
+        "faithfulness": 0.0,
+        "unsupported_rate": 1.0,
+        "is_unsupported": true
+      },
+      {
+        "case_id": "ANALYSIS_05_INSUFFICIENT_EVIDENCE",
+        "passed": true,
+        "insufficient_detected": true,
+        "corpus_count": 1
+      }
+    ]
+  },
+  "agentic_workflow": {
+    "evaluator": "AgenticEvaluator",
+    "benchmark_dataset": "agentic_scenarios_benchmark.json",
+    "total_scenarios": 6,
+    "passed_scenarios": 6,
+    "task_success_rate": 1.0,
+    "retry_rate": 0.1667,
+    "unnecessary_tool_call_rate": 0.0,
+    "stopping_condition_accuracy": 1.0,
+    "scenario_results": [
+      {
+        "scenario_id": "AGENT_01_CLARIFICATION",
+        "passed": true,
+        "missing_info_detected": true,
+        "routed_to": "ask_user",
+        "expected_branch": "ask_user"
+      },
+      {
+        "scenario_id": "AGENT_02_PLAN_REVISION",
+        "passed": true,
+        "critique_status": "NEEDS_REVISION",
+        "routed_to": "select_tools"
+      },
+      {
+        "scenario_id": "AGENT_03_RETRY_RECOVERY",
+        "passed": true,
+        "retry_status": "RETRY_REQUESTED",
+        "retry_count": 1,
+        "routed_to": "execute_tools"
+      },
+      {
+        "scenario_id": "AGENT_04_RETRY_EXHAUSTION",
+        "passed": true,
+        "terminal_status": "RETRY_EXHAUSTED",
+        "routed_to": "reflect_and_revise"
+      },
+      {
+        "scenario_id": "AGENT_05_MAX_STEPS",
+        "passed": true,
+        "step_count": 20,
+        "max_steps": 20,
+        "routed_to": "critique_findings"
+      },
+      {
+        "scenario_id": "AGENT_06_DEGRADED_MODE",
+        "passed": true,
+        "is_degraded": true,
+        "supported_deterministic_tools": [
+          "search_academic_papers",
+          "read_research_paper",
+          "analyze_experimental_results",
+          "generate_citation"
+        ]
+      }
+    ]
+  },
+  "reliability": {
+    "evaluator": "ReliabilityEvaluator",
+    "total_fault_injections": 4,
+    "passed_fault_injections": 4,
+    "reliability_score": 1.0,
+    "degraded_mode_operational": true,
+    "test_details": [
+      {
+        "test": "degraded_mode_pipeline",
+        "passed": true,
+        "search_operational": true,
+        "citation_operational": true
+      },
+      {
+        "test": "search_provider_failover",
+        "passed": true,
+        "recovered_paper_count": 1,
+        "captured_errors": [
+          "openalex",
+          "semantic_scholar"
+        ]
+      },
+      {
+        "test": "corrupted_pdf_handling",
+        "passed": true,
+        "status": "FAILED",
+        "error_message": "Invalid PDF structure or corrupted header"
+      },
+      {
+        "test": "empty_query_validation",
+        "passed": true,
+        "validation_caught": true
+      }
+    ]
+  }
+}

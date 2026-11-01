@@ -1,0 +1,190 @@
+[
+  {
+    "query_id": "AS_01",
+    "domain": "Amharic Sentiment Analysis",
+    "query": "Amharic sentiment analysis social media benchmark datasets",
+    "expected_topics": [
+      "sentiment analysis",
+      "amharic",
+      "social media",
+      "dataset"
+    ],
+    "relevance_judgments": {
+      "amharic_sentiment_corpus_2021": 3,
+      "yirgu_amharic_aspect_sentiment_2022": 3,
+      "sebsibe_multilingual_sentiment_2023": 2,
+      "african_nlp_benchmark_2023": 1,
+      "general_nlp_survey_2020": 0
+    }
+  },
+  {
+    "query_id": "AS_02",
+    "domain": "Amharic Named Entity Recognition",
+    "query": "Amharic named entity recognition CRF and deep neural models",
+    "expected_topics": [
+      "named entity recognition",
+      "ner",
+      "crf",
+      "amharic",
+      "bilstm"
+    ],
+    "relevance_judgments": {
+      "amharic_ner_crf_bilstm_2019": 3,
+      "ethiopian_languages_ner_2022": 3,
+      "african_ner_survey_2023": 2,
+      "cross_lingual_transfer_2021": 1,
+      "speech_synthesis_amharic_2020": 0
+    }
+  },
+  {
+    "query_id": "AS_03",
+    "domain": "Machine Translation",
+    "query": "Amharic English neural machine translation low resource parallel corpus",
+    "expected_topics": [
+      "neural machine translation",
+      "nmt",
+      "amharic",
+      "english",
+      "parallel corpus"
+    ],
+    "relevance_judgments": {
+      "amharic_nmt_2024": 3,
+      "tesfaye_amharic_en_nmt_2021": 3,
+      "low_resource_african_mt_2022": 2,
+      "multilingual_nmt_eval_2023": 1,
+      "image_captioning_2020": 0
+    }
+  },
+  {
+    "query_id": "AS_04",
+    "domain": "Handwritten Amharic OCR",
+    "query": "Handwritten Amharic character recognition historical manuscripts OCR",
+    "expected_topics": [
+      "ocr",
+      "amharic",
+      "handwritten",
+      "ethiopic script",
+      "character recognition"
+    ],
+    "relevance_judgments": {
+      "amharic_handwritten_ocr_cnn_2020": 3,
+      "ethiopic_script_segmentation_ocr_2022": 3,
+      "historical_geez_amharic_ocr_2023": 2,
+      "arabic_script_ocr_2019": 1,
+      "english_audio_recognition_2021": 0
+    }
+  },
+  {
+    "query_id": "AS_05",
+    "domain": "Low-Resource Language Modeling",
+    "query": "Low resource language modeling for Ethiopic script morphologically rich languages",
+    "expected_topics": [
+      "language modeling",
+      "low resource",
+      "morphology",
+      "ethiopic",
+      "amharic"
+    ],
+    "relevance_judgments": {
+      "amharic_morphological_lm_2021": 3,
+      "horn_of_africa_lm_benchmark_2023": 3,
+      "bantu_ethiopic_comparative_lm_2022": 2,
+      "tokenization_low_resource_2023": 2,
+      "quantum_nlp_foundations_2021": 0
+    }
+  },
+  {
+    "query_id": "AS_06",
+    "domain": "Multilingual Language Models",
+    "query": "AfroXLMR and multilingual transformer fine tuning for Amharic NLP",
+    "expected_topics": [
+      "afroxlmr",
+      "multilingual",
+      "transformer",
+      "amharic",
+      "mbert"
+    ],
+    "relevance_judgments": {
+      "afro_xlmr_evaluation_amharic_2022": 3,
+      "multilingual_bert_amharic_transfer_2021": 3,
+      "cross_lingual_african_benchmarks_2023": 2,
+      "xlmr_base_fine_tuning_2020": 1,
+      "reinforcement_learning_robotics_2022": 0
+    }
+  },
+  {
+    "query_id": "AS_07",
+    "domain": "Amharic Sentiment Analysis",
+    "query": "Aspect based sentiment analysis for Amharic e-commerce reviews",
+    "expected_topics": [
+      "aspect based",
+      "sentiment analysis",
+      "amharic",
+      "reviews"
+    ],
+    "relevance_judgments": {
+      "yirgu_amharic_aspect_sentiment_2022": 3,
+      "amharic_sentiment_corpus_2021": 2,
+      "multilingual_aspect_sentiment_2023": 1,
+      "topic_modeling_amharic_2019": 1,
+      "protein_folding_transformers_2023": 0
+    }
+  },
+  {
+    "query_id": "AS_08",
+    "domain": "Amharic Named Entity Recognition",
+    "query": "Transformer based named entity recognition for low resource Ethiopian languages",
+    "expected_topics": [
+      "transformer",
+      "named entity recognition",
+      "ethiopian languages",
+      "amharic"
+    ],
+    "relevance_judgments": {
+      "ethiopian_languages_ner_2022": 3,
+      "amharic_ner_crf_bilstm_2019": 2,
+      "african_ner_survey_2023": 2,
+      "mbert_tokenization_ethiopic_2021": 1,
+      "graph_neural_networks_circuits_2022": 0
+    }
+  },
+  {
+    "query_id": "AS_09",
+    "domain": "Machine Translation",
+    "query": "Subword tokenization and back-translation for English-Amharic NMT",
+    "expected_topics": [
+      "subword",
+      "byte pair encoding",
+      "back translation",
+      "amharic",
+      "nmt"
+    ],
+    "relevance_judgments": {
+      "amharic_nmt_2024": 3,
+      "tesfaye_amharic_en_nmt_2021": 3,
+      "low_resource_african_mt_2022": 2,
+      "bpe_tokenization_african_nlp_2021": 2,
+      "dns_network_routing_2020": 0
+    }
+  },
+  {
+    "query_id": "AS_10",
+    "domain": "Handwritten Amharic OCR",
+    "query": "Deep convolutional recurrent neural networks for Ethiopic handwritten manuscript OCR",
+    "expected_topics": [
+      "crnn",
+      "deep learning",
+      "ethiopic",
+      "handwritten",
+      "ocr",
+      "amharic"
+    ],
+    "relevance_judgments": {
+      "amharic_handwritten_ocr_cnn_2020": 3,
+      "ethiopic_script_segmentation_ocr_2022": 3,
+      "historical_geez_amharic_ocr_2023": 2,
+      "arabic_handwritten_crnn_2021": 1,
+      "autonomous_vehicle_slam_2021": 0
+    }
+  }
+]

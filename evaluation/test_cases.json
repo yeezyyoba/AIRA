@@ -1,0 +1,23 @@
+[
+  {
+    "id": "TC01",
+    "topic": "Amharic sentiment analysis",
+    "description": "Evaluate recent sentiment analysis models and benchmark dataset limitations.",
+    "expected_domains": ["Amharic NLP", "Sentiment Analysis"],
+    "date_range": [2019, 2024]
+  },
+  {
+    "id": "TC02",
+    "topic": "Amharic named entity recognition",
+    "description": "Compare neural architectures and CRF-based approaches for Amharic NER.",
+    "expected_domains": ["Amharic NLP", "Named Entity Recognition"],
+    "date_range": [2018, 2024]
+  },
+  {
+    "id": "TC03",
+    "topic": "Amharic machine translation",
+    "description": "Analyze low-resource neural machine translation techniques between Amharic and English.",
+    "expected_domains": ["Machine Translation", "Low-Resource NLP"],
+    "date_range": [2020, 2024]
+  }
+]

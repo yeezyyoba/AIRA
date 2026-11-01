@@ -1,0 +1,53 @@
+[
+  {
+    "task_id": "E2E_01_SENTIMENT_ANALYSIS",
+    "research_question": "Compare recent approaches to Amharic sentiment analysis and identify limitations in existing datasets and models.",
+    "target_corpus": [
+      "amharic_sentiment_corpus_2021",
+      "yirgu_amharic_aspect_sentiment_2022"
+    ],
+    "rubric": {
+      "relevance_weight": 0.2,
+      "factual_accuracy_weight": 0.25,
+      "evidence_coverage_weight": 0.2,
+      "citation_accuracy_weight": 0.15,
+      "completeness_weight": 0.1,
+      "transparency_weight": 0.1
+    },
+    "minimum_passing_score": 0.8
+  },
+  {
+    "task_id": "E2E_02_NER_EVALUATION",
+    "research_question": "Analyze neural architectures for Amharic Named Entity Recognition comparing CRF baselines and transformer transfer.",
+    "target_corpus": [
+      "amharic_ner_crf_bilstm_2019",
+      "ethiopian_languages_ner_2022"
+    ],
+    "rubric": {
+      "relevance_weight": 0.2,
+      "factual_accuracy_weight": 0.25,
+      "evidence_coverage_weight": 0.2,
+      "citation_accuracy_weight": 0.15,
+      "completeness_weight": 0.1,
+      "transparency_weight": 0.1
+    },
+    "minimum_passing_score": 0.8
+  },
+  {
+    "task_id": "E2E_03_LOW_RESOURCE_NMT",
+    "research_question": "Investigate low-resource English-Amharic neural machine translation, back-translation data augmentation, and vocabulary fragmentation.",
+    "target_corpus": [
+      "amharic_nmt_2024",
+      "tesfaye_amharic_en_nmt_2021"
+    ],
+    "rubric": {
+      "relevance_weight": 0.2,
+      "factual_accuracy_weight": 0.25,
+      "evidence_coverage_weight": 0.2,
+      "citation_accuracy_weight": 0.15,
+      "completeness_weight": 0.1,
+      "transparency_weight": 0.1
+    },
+    "minimum_passing_score": 0.8
+  }
+]

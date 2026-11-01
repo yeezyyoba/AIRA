@@ -1,0 +1,82 @@
+"""Application Settings and Configuration."""
+from typing import List, Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Centralized application settings loaded from environment variables."""
+    PROJECT_NAME: str = "AIRA - Amharic Intelligent Research Assistant"
+    API_V1_STR: str = "/api/v1"
+    VERSION: str = "0.1.0"
+
+    # Server configuration
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+
+    # CORS configuration for the planned Next.js / React frontend
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
+    # Primary LLM Provider (Google Gemini)
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-3.8-flash"
+
+    # Fallback LLM Provider (Groq)
+    FALLBACK_PROVIDER: str = "groq"
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+
+    # Academic Search APIs
+    OPENALEX_API_KEY: Optional[str] = None
+    SEMANTIC_SCHOLAR_API_KEY: Optional[str] = None
+    CROSSREF_MAILTO: Optional[str] = "researcher@example.com"
+
+    # Database & Storage Paths
+    DATABASE_URL: str = "sqlite:///./aira.db"
+    CHROMA_PERSIST_DIRECTORY: str = "./data/chroma"
+    PAPERS_DIRECTORY: str = "./data/papers"
+    PROCESSED_DIRECTORY: str = "./data/processed"
+    REPORTS_DIRECTORY: str = "./data/reports"
+
+    # Agent & Search Limits
+    MAX_AGENT_STEPS: int = 20
+    MAX_RETRIES: int = 2
+    MAX_SEARCH_RESULTS: int = 20
+    REQUEST_TIMEOUT_SECONDS: int = 30
+    ACADEMIC_MAX_RETRIES: int = 2
+    ACADEMIC_INITIAL_BACKOFF_SECONDS: float = 1.0
+
+    # PDF Processing & Security Configuration (Phase 4)
+    MAX_PDF_SIZE_BYTES: int = 30 * 1024 * 1024  # 30 MB maximum file size
+    PDF_DOWNLOAD_TIMEOUT: float = 30.0  # seconds
+    DEFAULT_EXTRACTION_METHOD: str = "auto"  # 'auto', 'pymupdf', 'pdfplumber'
+    MAX_REDIRECTS: int = 3
+    MAX_PDF_PAGES: int = 200  # maximum pages per document to prevent memory bombs
+    MAX_EXTRACTED_CHARS: int = 1_000_000  # 1 million characters limit
+    PDF_PROCESSING_TIMEOUT: float = 30.0  # seconds
+
+    # Environment & Deployment Safety
+    ENVIRONMENT: str = "development"  # 'development', 'staging', 'production'
+    ALLOW_MOCK_EMBEDDINGS: bool = False  # Explicit override to allow mock embeddings in production
+
+    # RAG & Embedding Configuration (Phase 5)
+    EMBEDDING_PROVIDER: str = "mock"  # 'gemini', 'mock', 'none'
+    EMBEDDING_MODEL: str = "gemini-embedding-2"
+    EMBEDDING_DIMENSION: int = 768
+    EMBEDDING_BATCH_SIZE: int = 16
+    EMBEDDING_TIMEOUT_SECONDS: float = 15.0
+    RAG_CHUNK_SIZE: int = 1000
+    RAG_CHUNK_OVERLAP: int = 150
+    RAG_DEFAULT_TOP_K: int = 5
+    RAG_MAX_TOP_K: int = 50
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+
+settings = Settings()
