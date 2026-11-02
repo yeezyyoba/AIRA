@@ -27,6 +27,7 @@ requests>=2.32.0
 
 # PDF & Document Processing
 pymupdf>=1.24.0
+pymupdf4llm>=2.0  # layout heading detection in tools/paper_reader.py
 pdfplumber>=0.11.0
 
 # Data Analysis & Metrics

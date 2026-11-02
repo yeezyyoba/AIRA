@@ -9,13 +9,15 @@ Identifies evidence-supported research gaps from indexed papers:
 Strictly distinguishes AUTHOR_ACKNOWLEDGED_GAP, CROSS_PAPER_GAP, and POTENTIAL_RESEARCH_DIRECTION.
 Never claims global novelty based only on a localized corpus.
 """
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from llm.model_router import ModelRouter, model_router as default_model_router
 from logging_config.logger import get_logger
 from memory.vector_store import ChromaVectorStore, vector_store as default_vector_store
 from services.paper_repository import PaperRepository, paper_repository as default_paper_repo
 from validation.schemas import (
+    ExtractedPaperDataSchema,
     EvidenceItemSchema,
     EvidenceType,
     GapType,
@@ -25,6 +27,62 @@ from validation.schemas import (
 )
 
 logger = get_logger("gap_identifier")
+
+# Author-acknowledged gaps may only come from these sections. The heading must be the
+# whole section name (optionally numbered, optionally "X and Y"), so a body line such
+# as "limitation of computation resource languages, we" or "3 Methodology" never counts.
+_ACKNOWLEDGEMENT_SECTION = (
+    r"(?:limitations?|discussions?|conclusions?|concluding\s+remarks"
+    r"|future\s+(?:work|directions?|research)|threats\s+to\s+validity)"
+)
+_ACKNOWLEDGEMENT_HEADING = re.compile(
+    r"^(?:(?:\d{1,2}(?:\.\d{1,2})*|[A-H](?:\.\d{1,2})*)\.?\s+)?"
+    r"(?:(?:results|summary|conclusions?)\s+(?:and|&)\s+)?"
+    + _ACKNOWLEDGEMENT_SECTION
+    + r"(?:\s+(?:and|&)\s+[a-z][a-z\s\-]{0,40})?$",
+    re.IGNORECASE,
+)
+
+
+def is_acknowledgement_heading(heading: Optional[str]) -> bool:
+    """True if ``heading`` names a Limitations, Discussion, Conclusion or Future Work section."""
+    if not heading:
+        return False
+    cleaned = " ".join(heading.replace("*", "").split()).strip(" :.")
+    return bool(_ACKNOWLEDGEMENT_HEADING.match(cleaned))
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def _section_provenance(
+    data: ExtractedPaperDataSchema,
+    section_text: str,
+    heading_words: Tuple[str, ...],
+) -> Tuple[str, List[EvidenceItemSchema]]:
+    """Find the evidence passage(s) the parser recorded for a section and judge their heading.
+
+    Evidence is linked to the section if its heading mentions one of ``heading_words``
+    or its passage contains the start of the section text.
+
+    Returns one of:
+      ("verified", items)  linked evidence comes from an acknowledgement section heading
+      ("rejected", items)  linked evidence comes from any other heading (e.g. Methods)
+      ("unknown", [])      no linked evidence (e.g. data built without the PDF parser)
+    """
+    opening = _normalize(section_text)[:40]
+    linked = [
+        ev for ev in (data.evidence or [])
+        if (ev.section_heading and any(w in ev.section_heading.lower() for w in heading_words))
+        or (opening and opening in _normalize(ev.passage))
+    ]
+    if not linked:
+        return "unknown", []
+    verified = [ev for ev in linked if is_acknowledgement_heading(ev.section_heading)]
+    if verified:
+        return "verified", verified
+    return "rejected", linked
 
 
 async def identify_research_gaps(
@@ -72,18 +130,29 @@ async def identify_research_gaps(
     gaps: List[ResearchGapSchema] = []
     gap_counter = 1
 
-    # 1. Author Acknowledged Gaps (from Limitations and Future Work)
+    # 1. Author Acknowledged Gaps (from Limitations and Future Work).
+    #    Only text whose recorded heading is a Limitations / Discussion / Conclusion /
+    #    Future Work section counts; text the parser took from any other section
+    #    (e.g. a Methods sentence mentioning "limitation") is never reported.
+    usable_limitations: Dict[str, List[EvidenceItemSchema]] = {}  # pid -> verified evidence ([] = unknown)
     for pid, paper in loaded_papers.items():
         data = paper.extracted_data
         if not data:
             continue
 
         if data.limitations and len(data.limitations.strip()) > 10:
-            ev_list: List[EvidenceItemSchema] = []
-            for ev in data.evidence:
-                if ev.section_heading and "limitation" in ev.section_heading.lower():
-                    ev_list.append(ev)
+            provenance, ev_list = _section_provenance(data, data.limitations, ("limitation", "threat"))
+            if provenance == "rejected":
+                logger.info(
+                    f"Ignoring limitations text for '{pid}': it comes from section(s) "
+                    f"{[ev.section_heading for ev in ev_list]}, not a Limitations, Discussion, "
+                    "Conclusion or Future Work section."
+                )
+        else:
+            provenance, ev_list = "absent", []
 
+        if provenance in ("verified", "unknown"):
+            usable_limitations[pid] = ev_list
             # If no dedicated evidence passage exists, preserve text without fabricating page 1
             if not ev_list:
                 ev_list = [
@@ -110,11 +179,16 @@ async def identify_research_gaps(
             gap_counter += 1
 
         if data.future_work and len(data.future_work.strip()) > 10:
-            ev_list: List[EvidenceItemSchema] = []
-            for ev in data.evidence:
-                if ev.section_heading and "future" in ev.section_heading.lower():
-                    ev_list.append(ev)
+            provenance, ev_list = _section_provenance(data, data.future_work, ("future",))
+            if provenance == "rejected":
+                logger.info(
+                    f"Ignoring future-work text for '{pid}': it comes from section(s) "
+                    f"{[ev.section_heading for ev in ev_list]}, not an acknowledgement section."
+                )
+        else:
+            provenance, ev_list = "absent", []
 
+        if provenance in ("verified", "unknown"):
             if not ev_list:
                 ev_list = [
                     EvidenceItemSchema(
@@ -198,12 +272,12 @@ async def identify_research_gaps(
     }
     for pid, paper in loaded_papers.items():
         data = paper.extracted_data
-        if data and data.limitations:
+        if data and data.limitations and pid in usable_limitations:
             themes = [label for kw, label in theme_keywords.items() if kw in data.limitations.lower()]
             if themes:
                 matched_themes[pid] = themes
                 common_limitations.append(pid)
-                ev_lim = next((e for e in (data.evidence or []) if e.section_heading and "limitation" in e.section_heading.lower()), None)
+                ev_lim = next(iter(usable_limitations[pid]), None)
                 if ev_lim:
                     direction_evidence.append(ev_lim)
                 else:

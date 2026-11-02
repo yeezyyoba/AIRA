@@ -3,8 +3,22 @@
 Extracts and organizes academic paper dimensions from PDFs using PyMuPDF (primary)
 and pdfplumber (fallback). Preserves 1-indexed page numbers, exact section headings,
 and verbatim evidence passages. Treats all PDF content as untrusted input.
+
+Section detection has two strategies:
+
+1. Layout headings (primary): pymupdf4llm's layout analysis marks heading boxes from
+   font size, weight and position. Boxes are put into two-column reading order from
+   their coordinates, headings are accepted only if numbered ("4.1 Datasets") or a
+   known section name, and numbering is used to verify the order. Section *text* is
+   still taken from PyMuPDF's raw page text (clipped to each box), so excerpts,
+   evidence passages and chunk page attribution stay verbatim with ``raw_text_by_page``.
+2. Regex on plain text lines (fallback): used when no headings are found, when the
+   layout pass fails or exceeds its time budget, or when heading numbering is still
+   out of order after reordering (boundaries would be unreliable).
 """
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import io
 import os
 from pathlib import Path
@@ -197,6 +211,37 @@ def _extract_with_pdfplumber(pdf_bytes: bytes) -> Tuple[Dict[int, str], Dict[str
         raise InvalidPDFError(f"pdfplumber failed to parse document: {e}") from e
 
 
+TARGET_SECTION_KEYS = (
+    "abstract", "research_objectives", "research_questions",
+    "methodology", "dataset", "models_and_algorithms",
+    "experimental_setup", "evaluation_metrics", "results",
+    "limitations", "future_work", "conclusion",
+)
+
+
+def _title_and_authors(
+    raw_text_by_page: Dict[int, str],
+    metadata_title: Optional[str],
+    metadata_author: Optional[str],
+) -> Tuple[Optional[str], List[str]]:
+    """Title from metadata, else the first substantive first-page line; authors from metadata."""
+    first_page_text = raw_text_by_page.get(1, "")
+    first_page_lines = [line.strip() for line in first_page_text.splitlines() if line.strip()]
+
+    extracted_title = metadata_title
+    extracted_authors: List[str] = []
+    if metadata_author:
+        extracted_authors.append(metadata_author)
+
+    if first_page_lines and not extracted_title:
+        # Academic conventions: Title is typically the first substantive line before 'abstract'
+        for line in first_page_lines[:4]:
+            if not SECTION_REGEXES["abstract"].match(line) and len(line) > 10:
+                extracted_title = line
+                break
+    return extracted_title, extracted_authors
+
+
 def _parse_academic_sections(
     raw_text_by_page: Dict[int, str],
     paper_id: str,
@@ -214,22 +259,7 @@ def _parse_academic_sections(
     current_lines: List[str] = []
 
     evidence_items: List[EvidenceItemSchema] = []
-
-    # First page inspection for title and authors
-    first_page_text = raw_text_by_page.get(1, "")
-    first_page_lines = [line.strip() for line in first_page_text.splitlines() if line.strip()]
-
-    extracted_title = metadata_title
-    extracted_authors: List[str] = []
-    if metadata_author:
-        extracted_authors.append(metadata_author)
-
-    if first_page_lines and not extracted_title:
-        # Academic conventions: Title is typically the first substantive line before 'abstract'
-        for line in first_page_lines[:4]:
-            if not SECTION_REGEXES["abstract"].match(line) and len(line) > 10:
-                extracted_title = line
-                break
+    extracted_title, extracted_authors = _title_and_authors(raw_text_by_page, metadata_title, metadata_author)
 
     # Scan pages sequentially to preserve page references
     for page_num in sorted(raw_text_by_page.keys()):
@@ -350,6 +380,491 @@ def _parse_academic_sections(
         evidence=evidence_items,
         missing_sections=missing_sections,
     )
+
+
+# ==============================================================================
+# Layout-based section detection (primary strategy)
+# ==============================================================================
+
+# pymupdf4llm runs on one dedicated thread so the event loop stays responsive and a
+# time budget can be enforced. A timed-out conversion cannot be killed: it finishes
+# in the background, and later requests queue behind it (falling back to the regex
+# parser if their own budget runs out first).
+_LAYOUT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aira-layout")
+# Seconds of PDF_PROCESSING_TIMEOUT kept in reserve for the regex fallback.
+_LAYOUT_RESERVE_SECONDS = 3.0
+
+# Layout box classes whose text never belongs to a section body.
+_SKIPPED_BOX_CLASSES = frozenset({"page-header", "page-footer", "footnote", "picture"})
+
+_NUMBER_PREFIX = re.compile(r"^(?P<num>\d{1,2}(?:\.\d{1,2}){0,3})\.?\s+(?P<title>\S.*)$")
+_APPENDIX_PREFIX = re.compile(r"^(?P<num>[A-H](?:\.\d{1,2}){0,3})\.?\s+(?P<title>[A-Z].*)$")
+_BARE_NUMBER = re.compile(r"^\d{1,2}(?:\.\d{1,2}){0,3}\.?$")
+_URL_OR_FOOTNOTE = re.compile(
+    r"(?i)https?://|www\.|\.(?:com|org|io|net|edu)\b|@|^\d+\s*https?|^\d+[a-z]"
+)
+_RUN_IN_ABSTRACT = re.compile(r"^(?P<head>abstract)\s*[—–:\-.]\s*(?P<rest>\S.*)$", re.IGNORECASE)
+
+# Whole-name vocabulary for unnumbered headings ("Results and Discussion" is split on
+# "and" / "&" / "," and every part must be a known name).
+_KNOWN_SECTION_PART = re.compile(
+    r"""
+      abstract | introduction | background | preliminar(?:y|ies) | related\s+works? | literature\s+review
+    | (?:proposed\s+|our\s+)?(?:methods?|methodology|approach(?:es)?|framework|system|models?)
+    | system\s+(?:description|overview|architecture) | model\s+(?:overview|architecture|description)
+    | task\s+(?:description|definition|overview|setup) | problem\s+(?:definition|formulation|statement)
+    | data | datasets? | corpus | corpora | benchmarks?
+    | data\s+(?:collection|preparation|description|sources?|statistics) | (?:data\s+)?pre-?processing
+    | annotation | experiments? | experimental\s+(?:setup|settings?|design|details|results|evaluation)
+    | (?:evaluation\s+)?(?:metrics?|measures) | evaluation | implementation(?:\s+details)?
+    | training(?:\s+details)? | hyper-?parameters? | baselines? | algorithms?
+    | results? | (?:error\s+)?analysis | ablations?(?:\s+stud(?:y|ies))? | discussion
+    | limitations? | threats\s+to\s+validity | future\s+(?:work|directions?|research)
+    | conclusions? | concluding\s+remarks | summary
+    | research\s+(?:questions?|objectives?) | hypothes[ie]s | objectives?
+    | references | bibliography | acknowledge?ments? | appendix(?:\s+.*)? | supplementary\s+materials?
+    | ethics\s+statement | ethical\s+considerations | broader\s+impacts?
+    """,
+    re.VERBOSE,
+)
+# Unnumbered headings that are top-level even in a numbered paper.
+_TOP_LEVEL_UNNUMBERED = re.compile(
+    r"abstract|references|bibliography|acknowledge?ments?|limitations?(?:\s.*)?|appendix.*"
+    r"|ethics\s+statement|ethical\s+considerations|broader\s+impacts?|supplementary\s+materials?"
+)
+_BACK_MATTER = re.compile(r"references|bibliography")
+
+# Heading title -> schema field, first rule that matches wins. Order matters:
+# "Experimental Results" is results, "Evaluation Metrics" is evaluation_metrics.
+_NON_TARGET_HEADING = re.compile(
+    r"\b(?:introduction|background|related\s+works?|literature|references|bibliography|"
+    r"acknowledge?ments?|appendix|ethic\w*|broader\s+impacts?|task\s+(?:description|definition|overview))\b"
+)
+_HEADING_KEY_RULES: Tuple[Tuple[str, "re.Pattern[str]"], ...] = tuple(
+    (key, re.compile(pattern)) for key, pattern in (
+        ("abstract", r"^abstract$"),
+        ("limitations", r"\blimitations?\b|\bthreats\s+to\s+validity\b"),
+        ("conclusion", r"\bconclu(?:sions?|ding\s+remarks)\b"),
+        ("future_work", r"\bfuture\s+(?:work|directions?|research)\b"),
+        ("evaluation_metrics", r"\bmetrics?\b|\b(?:evaluation|performance)\s+measures?\b"),
+        ("results", r"\bresults?\b|\bfindings\b|\bperformance\b"),
+        ("experimental_setup", r"\bexperiment(?:s|al)?\b|\bsetup\b|\bsettings?\b|\bhyper-?parameters?\b"
+                               r"|\bimplementation\b|\btraining\s+details\b"),
+        ("dataset", r"\bdata(?:sets?)?\b|\bcorp(?:us|ora)\b|\bbenchmarks?\b|\bpre-?processing\b|\bannotation\b"),
+        ("models_and_algorithms", r"\bmodels?\b|\balgorithms?\b|\barchitectures?\b|\bbaselines?\b"),
+        ("methodology", r"\bmethod(?:s|ology)?\b|\bapproach(?:es)?\b|\bsystem\b|\bframework\b|\bproposed\b"),
+        ("research_questions", r"\bresearch\s+questions?\b|\bhypothes[ie]s\b"),
+        ("research_objectives", r"\bobjectives?\b|\bgoals?\b|\baims?\b"),
+    )
+)
+
+
+@dataclass
+class _LayoutBox:
+    page: int
+    cls: str
+    bbox: Tuple[float, float, float, float]
+    page_width: float
+    markdown: str  # pymupdf4llm markdown; only used to read heading text
+    raw: str  # PyMuPDF plain text inside the box (same engine as raw_text_by_page)
+
+
+@dataclass
+class _Heading:
+    page: int
+    display: str  # as printed, e.g. "4.1 Datasets"
+    title: str  # without numbering, e.g. "Datasets"
+    number: Optional[Tuple[int, ...]]
+    back_matter: bool  # after References (appendices)
+    depth: int = 1
+    key: Optional[str] = None
+
+
+@dataclass
+class SectionSpan:
+    """Where a detected section starts and ends (diagnostics and tests)."""
+    key: str
+    heading: str
+    start_page: int
+    end_page: int
+    text: str
+
+
+def _clean_control_chars(text: str) -> str:
+    cleaned = text.replace("\x00", "")
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", cleaned)
+
+
+def _extract_layout_boxes(pdf_bytes: bytes) -> List[_LayoutBox]:
+    """Run pymupdf4llm layout analysis (no OCR) and return its content boxes.
+
+    Runs on the layout worker thread. Box text is re-read with PyMuPDF's plain-text
+    extraction clipped to the box, so it matches ``raw_text_by_page`` verbatim.
+    """
+    import pymupdf4llm  # lazy: importing it activates PyMuPDF's layout engine
+
+    boxes: List[_LayoutBox] = []
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        chunks = pymupdf4llm.to_markdown(
+            doc, page_chunks=True, use_ocr=False, header=False, footer=False, show_progress=False,
+        )
+        for chunk in chunks:
+            page_num = int(chunk["metadata"]["page_number"])
+            page = doc[page_num - 1]
+            text = chunk.get("text") or ""
+            for box in chunk.get("page_boxes") or []:
+                cls = str(box.get("class") or "text")
+                if cls in _SKIPPED_BOX_CLASSES:
+                    continue
+                x0, y0, x1, y1 = (float(v) for v in box["bbox"])
+                start, end = box.get("pos") or (0, 0)
+                raw = page.get_text("text", clip=pymupdf.Rect(x0, y0, x1, y1)) or ""
+                boxes.append(_LayoutBox(
+                    page=page_num, cls=cls, bbox=(x0, y0, x1, y1), page_width=float(page.rect.width),
+                    markdown=text[start:end], raw=_clean_control_chars(raw),
+                ))
+    finally:
+        doc.close()
+    return boxes
+
+
+def _reading_order(boxes: List[_LayoutBox]) -> List[_LayoutBox]:
+    """Order boxes page by page in two-column reading order from their coordinates.
+
+    Full-width boxes (title, wide tables) split a page into bands; inside a band the
+    left column is read top to bottom, then the right column. Pages without both a
+    left and a right column are read top to bottom.
+    """
+    from bisect import bisect_left, bisect_right
+
+    ordered: List[_LayoutBox] = []
+    for page in sorted({b.page for b in boxes}):
+        page_boxes = [b for b in boxes if b.page == page]
+        width = page_boxes[0].page_width or max(b.bbox[2] for b in page_boxes)
+        mid, tol = width / 2, width * 0.03
+
+        def column(b: _LayoutBox) -> int:
+            if b.bbox[2] <= mid + tol:
+                return 0
+            if b.bbox[0] >= mid - tol:
+                return 1
+            return -1  # spans both columns
+
+        columns = [column(b) for b in page_boxes]
+        if not (0 in columns and 1 in columns):
+            ordered.extend(sorted(page_boxes, key=lambda b: (b.bbox[1], b.bbox[0])))
+            continue
+        full_tops = sorted(b.bbox[1] for b, c in zip(page_boxes, columns) if c == -1)
+
+        def sort_key(item: Tuple[_LayoutBox, int]) -> Tuple[int, int, float]:
+            b, col = item
+            top = b.bbox[1]
+            if col == -1:
+                return (2 * bisect_left(full_tops, top) + 1, 0, top)
+            return (2 * bisect_right(full_tops, top), col, top)
+
+        ordered.extend(b for b, _ in sorted(zip(page_boxes, columns), key=sort_key))
+    return ordered
+
+
+def _clean_heading_markdown(markdown: str) -> str:
+    text = re.sub(r"<sup>.*?</sup>", "", markdown, flags=re.DOTALL)  # footnote markers
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"^\s*#+\s*", "", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
+    text = " ".join(text.split())
+    return text.strip(" :")
+
+
+def _is_known_section_name(title: str) -> bool:
+    normalized = " ".join(title.lower().split()).strip(" :.")
+    parts = [p for p in re.split(r"\s*(?:,|&|\band\b)\s*", normalized) if p]
+    return bool(parts) and all(_KNOWN_SECTION_PART.fullmatch(p) for p in parts)
+
+
+def _heading_key(title: str) -> Optional[str]:
+    """Map a heading title (numbering removed) to an ExtractedPaperDataSchema field."""
+    normalized = " ".join(title.lower().split()).strip(" :.")
+    if _NON_TARGET_HEADING.search(normalized):
+        return None
+    for key, pattern in _HEADING_KEY_RULES:
+        if pattern.search(normalized):
+            return key
+    return None
+
+
+def _parse_heading(text: str, page: int, back_matter: bool) -> Optional[_Heading]:
+    """Accept a heading only if it is numbered or a known section name; reject URLs/footnotes."""
+    text = text.strip()
+    if not text or len(text) > 120 or _URL_OR_FOOTNOTE.search(text):
+        return None
+    number: Optional[Tuple[int, ...]] = None
+    title = text
+    numbered = _NUMBER_PREFIX.match(text)
+    appendix = _APPENDIX_PREFIX.match(text) if back_matter else None
+    if numbered and int(numbered.group("num").split(".")[0]) <= 20:
+        number = tuple(int(x) for x in numbered.group("num").split("."))
+        title = numbered.group("title").strip()
+    elif appendix:
+        letter, *rest = appendix.group("num").split(".")
+        number = (100 + ord(letter) - ord("A"), *(int(x) for x in rest))
+        title = appendix.group("title").strip()
+    words = title.split()
+    if not re.search(r"[A-Za-z]", title) or len(words) > 12:
+        return None
+    if title.endswith(".") and len(words) > 4:  # a sentence, not a heading
+        return None
+    if number is None and not _is_known_section_name(title):
+        return None
+    return _Heading(page=page, display=text, title=title, number=number, back_matter=back_matter)
+
+
+# Single generic words that only count as an in-text heading when numbered; as a bare
+# line they are too often a table cell or a wrapped word.
+_GENERIC_SECTION_WORDS = frozenset({
+    "model", "models", "data", "system", "framework", "evaluation", "summary", "analysis",
+    "annotation", "training", "baseline", "baselines", "approach", "approaches", "algorithm",
+    "algorithms", "corpus", "corpora", "benchmark", "benchmarks", "measures", "metric",
+    "metrics", "objective", "objectives", "implementation", "experiment",
+})
+
+
+def _standalone_heading_line(lines: List[str], i: int) -> Optional[Tuple[str, int]]:
+    """If lines[i] (plus lines[i+1] for a split "4.1" / "Datasets") is a heading set in
+    the body font, return (heading_text, number_of_lines_used)."""
+    line, used = lines[i], 1
+    if _BARE_NUMBER.match(line) and i + 1 < len(lines):  # number and title on separate lines
+        line, used = f"{line.rstrip('.')} {lines[i + 1]}", 2
+    numbered = _NUMBER_PREFIX.match(line)
+    title = (numbered.group("title") if numbered else line).strip()
+    if not title or len(title) > 60 or not (title[0].isupper() or numbered):
+        return None
+    if title[-1] in ".,;":
+        return None
+    if not numbered and title.lower().strip(" :") in _GENERIC_SECTION_WORDS:
+        return None
+    if not _is_known_section_name(title):
+        return None
+    if i > 0 and not re.search(r"[.!?:)\]]$", lines[i - 1]):
+        return None  # previous line does not end a sentence: this is wrapped body text
+    return line, used
+
+
+def _split_body_headings(raw: str) -> List[Tuple[str, str]]:
+    """Split a text box at headings set in the body font, which layout analysis reports
+    as plain text. Returns [("text", ...) | ("heading", ...)] segments in order."""
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    segments: List[Tuple[str, str]] = []
+    buffer: List[str] = []
+    i = 0
+    if lines:
+        run_in = _RUN_IN_ABSTRACT.match(lines[0])
+        if run_in:  # "Abstract—We present ..."
+            segments.append(("heading", run_in.group("head")))
+            lines = [run_in.group("rest"), *lines[1:]]
+            i = 1
+            buffer.append(lines[0])
+    while i < len(lines):
+        found = _standalone_heading_line(lines, i)
+        if found:
+            if buffer:
+                segments.append(("text", "\n".join(buffer)))
+                buffer = []
+            segments.append(("heading", found[0]))
+            i += found[1]
+        else:
+            buffer.append(lines[i])
+            i += 1
+    if buffer:
+        segments.append(("text", "\n".join(buffer)))
+    return segments
+
+
+def _verbatim_passage(raw_text_by_page: Dict[int, str], heading: _Heading, body: str) -> str:
+    """Up to 400 characters copied from the raw page text, starting at the heading."""
+    page_text = raw_text_by_page.get(heading.page, "")
+    for needle in (heading.display, heading.title):
+        match = re.search(rf"(?m)^[ \t]*{re.escape(needle)}[ \t]*$", page_text)
+        if match:
+            idx = match.start() + (len(match.group(0)) - len(match.group(0).lstrip()))
+            return page_text[idx:idx + 400]
+    for needle in (heading.display, heading.title, body.splitlines()[0] if body else ""):
+        if needle and needle in page_text:
+            idx = page_text.find(needle)
+            return page_text[idx:idx + 400]
+    return body[:400].strip()
+
+
+def _parse_sections_with_layout(
+    boxes: List[_LayoutBox],
+    raw_text_by_page: Dict[int, str],
+    paper_id: str,
+    metadata_title: Optional[str] = None,
+    metadata_author: Optional[str] = None,
+) -> Tuple[Optional[ExtractedPaperDataSchema], Dict[str, SectionSpan], Optional[str]]:
+    """Build sections from layout headings.
+
+    Returns (data, spans, problem). ``data`` is None when no usable heading was found
+    (caller falls back silently) or when ``problem`` explains why the headings cannot
+    be trusted (caller falls back and reports it).
+    """
+    # 1. Reading order, then a flat stream of headings and body text.
+    items: List[Union[_Heading, Tuple[int, str]]] = []
+    back_matter = False
+    for box in _reading_order(boxes):
+        if box.cls == "section-header":
+            segments = [("heading", _clean_heading_markdown(box.markdown))]
+        elif box.cls == "text":
+            segments = _split_body_headings(box.raw)
+        else:
+            segments = [("text", box.raw)]
+        for kind, value in segments:
+            heading = _parse_heading(value, box.page, back_matter) if kind == "heading" else None
+            if heading:
+                items.append(heading)
+                if _BACK_MATTER.fullmatch(heading.title.lower()):
+                    back_matter = True
+            elif box.cls == "section-header":
+                if box.raw.strip():
+                    items.append((box.page, box.raw))  # rejected heading: keep its text as body
+            elif value.strip():
+                items.append((box.page, value))
+
+    headings = [it for it in items if isinstance(it, _Heading)]
+    if not headings:
+        return None, {}, None
+
+    # 2. Numbering must be strictly increasing (4 < 4.1 < 4.2 < 5) in reading order.
+    numbered = [h for h in headings if h.number and not h.back_matter]
+    for prev, cur in zip(numbered, numbered[1:]):
+        if cur.number <= prev.number:
+            return None, {}, (
+                f"Heading numbering is out of order after layout reordering "
+                f"('{prev.display}' on page {prev.page} before '{cur.display}' on page {cur.page}); "
+                f"layout section boundaries are unreliable for this document"
+            )
+
+    # 3. Depth: numbered -> number of levels; unnumbered -> top level, or a child of the
+    #    current numbered section in a numbered paper.
+    has_numbers = bool(numbered)
+    current_depth = 0
+    for h in headings:
+        if h.number:
+            h.depth = len(h.number)
+            current_depth = h.depth
+        elif not has_numbers or _TOP_LEVEL_UNNUMBERED.fullmatch(h.title.lower()):
+            h.depth = 1
+            current_depth = 0
+        else:
+            h.depth = current_depth + 1
+        h.key = _heading_key(h.title)
+
+    # 4. A section runs to the next heading at the same or a higher level, so a parent
+    #    section includes its subsections. The first heading for a field wins.
+    spans: Dict[str, SectionSpan] = {}
+    span_headings: Dict[str, Tuple[int, _Heading]] = {}  # key -> (stream position, heading)
+    for i, item in enumerate(items):
+        if not isinstance(item, _Heading) or not item.key or item.key in spans:
+            continue
+        lines: List[str] = []
+        end_page = item.page
+        for nxt in items[i + 1:]:
+            if isinstance(nxt, _Heading):
+                if nxt.depth <= item.depth:
+                    break
+                lines.append(nxt.display)
+                end_page = nxt.page
+            else:
+                lines.extend(line.strip() for line in nxt[1].splitlines() if line.strip())
+                end_page = nxt[0]
+        text = "\n".join(lines).strip()
+        if text:
+            spans[item.key] = SectionSpan(item.key, item.display, item.page, end_page, text)
+            span_headings[item.key] = (i, item)
+
+    if not spans:
+        return None, {}, None
+
+    evidence_items = [
+        EvidenceItemSchema(
+            paper_id=paper_id,
+            page_number=spans[key].start_page,
+            section_heading=spans[key].heading,
+            passage=_verbatim_passage(raw_text_by_page, heading, spans[key].text),
+            evidence_type=EvidenceType.DIRECT_EXTRACT,
+        )
+        for key, (_, heading) in sorted(span_headings.items(), key=lambda kv: kv[1][0])
+    ]
+
+    title, authors = _title_and_authors(raw_text_by_page, metadata_title, metadata_author)
+    texts = {key: span.text for key, span in spans.items()}
+    rq_text = texts.get("research_questions")
+    rq_list = [line.strip() for line in rq_text.splitlines() if line.strip()] if rq_text else None
+
+    data = ExtractedPaperDataSchema(
+        paper_id=paper_id,
+        title=title,
+        authors=authors,
+        abstract=texts.get("abstract"),
+        research_objectives=texts.get("research_objectives"),
+        research_questions=rq_list,
+        methodology=texts.get("methodology"),
+        dataset=texts.get("dataset"),
+        models_and_algorithms=texts.get("models_and_algorithms"),
+        experimental_setup=texts.get("experimental_setup"),
+        evaluation_metrics=texts.get("evaluation_metrics"),
+        results=texts.get("results"),
+        limitations=texts.get("limitations"),
+        future_work=texts.get("future_work"),
+        conclusion=texts.get("conclusion"),
+        evidence=evidence_items,
+        missing_sections=[k for k in TARGET_SECTION_KEYS if k not in spans],
+    )
+    return data, spans, None
+
+
+async def _detect_sections_with_layout(
+    pdf_bytes: bytes,
+    raw_text_by_page: Dict[int, str],
+    paper_id: str,
+    metadata: Dict[str, Any],
+    started_at: float,
+) -> Tuple[Optional[ExtractedPaperDataSchema], Optional[str]]:
+    """Run layout heading detection inside the PDF time budget.
+
+    Returns (data, warning). ``data`` is None whenever the regex parser should be used.
+    """
+    fallback = "used text-pattern section detection instead"
+    timeout = float(settings.PDF_PROCESSING_TIMEOUT)
+    budget = timeout - (time.perf_counter() - started_at) - min(_LAYOUT_RESERVE_SECONDS, 0.25 * timeout)
+    if budget <= 0.5:
+        return None, f"Layout heading detection skipped: PDF time budget exhausted; {fallback}."
+
+    loop = asyncio.get_running_loop()
+    try:
+        boxes = await asyncio.wait_for(
+            loop.run_in_executor(_LAYOUT_EXECUTOR, _extract_layout_boxes, pdf_bytes), timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"Layout heading detection for '{paper_id}' exceeded {budget:.1f}s")
+        return None, f"Layout heading detection exceeded its {budget:.1f}s budget; {fallback}."
+    except Exception as e:  # any layout/library failure must not fail the extraction
+        logger.warning(f"Layout heading detection failed for '{paper_id}': {e}")
+        return None, f"Layout heading detection failed ({type(e).__name__}: {e}); {fallback}."
+
+    data, spans, problem = _parse_sections_with_layout(
+        boxes, raw_text_by_page, paper_id, metadata.get("title"), metadata.get("author"),
+    )
+    if problem:
+        logger.warning(f"'{paper_id}': {problem}")
+        return None, f"{problem}; {fallback}."
+    if data is None:
+        logger.info(f"No layout headings found for '{paper_id}'; using text-pattern section detection.")
+        return None, None
+    logger.info(f"Layout headings used for '{paper_id}': {sorted(spans)}")
+    return data, None
 
 
 async def read_research_paper(
@@ -494,13 +1009,22 @@ async def read_research_paper(
                 raw_text_by_page=raw_text,
             )
 
-        # 5. Parse Academic Sections & Evidence References
-        extracted_data = _parse_academic_sections(
-            raw_text_by_page=raw_text,
-            paper_id=eff_id,
-            metadata_title=metadata.get("title"),
-            metadata_author=metadata.get("author"),
-        )
+        # 5. Parse Academic Sections & Evidence References.
+        #    Primary: layout headings (PyMuPDF documents only). Fallback: regex on text lines.
+        extracted_data: Optional[ExtractedPaperDataSchema] = None
+        if used_method == "pymupdf":
+            extracted_data, layout_warning = await _detect_sections_with_layout(
+                pdf_bytes, raw_text, eff_id, metadata, start_time,
+            )
+            if layout_warning:
+                warnings.append(layout_warning)
+        if extracted_data is None:
+            extracted_data = _parse_academic_sections(
+                raw_text_by_page=raw_text,
+                paper_id=eff_id,
+                metadata_title=metadata.get("title"),
+                metadata_author=metadata.get("author"),
+            )
 
         # Determine status
         identified_sections = [
