@@ -83,6 +83,7 @@ async def test_search_openalex_success():
                         "landing_page_url": "https://doi.org/10.1007/s10579-022-09600-1",
                     },
                     "open_access": {"is_oa": True, "oa_url": "https://arxiv.org/pdf/2201.0001"},
+                    "best_oa_location": {"pdf_url": "https://arxiv.org/pdf/2201.0001.pdf"},
                     "cited_by_count": 18,
                 }
             ]
@@ -106,6 +107,7 @@ async def test_search_openalex_success():
     assert p.is_open_access is True
     assert p.citation_count == 18
     assert p.source == "openalex"
+    assert p.provider_metadata["openalex"]["pdf_url"] == "https://arxiv.org/pdf/2201.0001.pdf"
 
 
 @pytest.mark.anyio
@@ -167,6 +169,10 @@ async def test_search_crossref_success():
                         "abstract": "<jats:p>In this paper we present morphology.</jats:p>",
                         "container-title": ["ACM Transactions on Asian and Low-Resource Language Information Processing"],
                         "URL": "https://doi.org/10.1145/3383583.3398544",
+                        "link": [
+                            {"URL": "https://example.org/article.html", "content-type": "text/html"},
+                            {"URL": "https://example.org/paper.pdf", "content-type": "application/pdf"},
+                        ],
                         "is-referenced-by-count": 12,
                     }
                 ]
@@ -190,6 +196,7 @@ async def test_search_crossref_success():
     assert "ACM Transactions" in (p.venue or "")
     assert p.citation_count == 12
     assert p.source == "crossref"
+    assert p.provider_metadata["crossref"]["pdf_url"] == "https://example.org/paper.pdf"
 
 
 def test_doi_based_deduplication():

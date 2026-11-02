@@ -29,8 +29,22 @@ def api_client():
     return TestClient(app)
 
 
-def test_complete_frontend_user_journey(api_client, monkeypatch):
-    """Verify the entire end-to-end API user journey used by the frontend dashboard."""
+def test_complete_frontend_user_journey(api_client, monkeypatch, offline_llm_router, tmp_path):
+    """Verify the entire end-to-end API user journey used by the frontend dashboard.
+
+    Every external dependency is replaced: academic search, metadata
+    validation, PDF reading, the LLM router, and the paper repository. Real
+    network access is additionally blocked by tests/conftest.py, so this test
+    can never fall through to Gemini/Groq or a PDF download. (The earlier
+    slowness came from exactly that: search/validate/read were mocked, but the
+    comparison and report steps still used the global ModelRouter, which made
+    real Gemini/Groq calls whenever API keys were present in .env.)
+    """
+    from services.paper_repository import PaperRepository
+
+    isolated_repo = PaperRepository(storage_dir=str(tmp_path / "processed"))
+    monkeypatch.setattr("agents.nodes.default_model_router", offline_llm_router)
+    monkeypatch.setattr("agents.nodes.default_paper_repo", isolated_repo)
     # 1. Health check detection
     res_health = api_client.get("/api/v1/health")
     assert res_health.status_code == 200
@@ -49,14 +63,25 @@ def test_complete_frontend_user_journey(api_client, monkeypatch):
     # Mock external tools upfront so tests run 100% offline without network calls
     async def mock_search_fn(*args, **kwargs):
         return [
-            PaperMetadataSchema(id="paper_transformer_001", title="Attention Is All You Need", authors=["Vaswani et al."], year=2017),
-            PaperMetadataSchema(id="paper_transformer_002", title="BERT: Pre-training of Deep Bidirectional Transformers", authors=["Devlin et al."], year=2018),
+            PaperMetadataSchema(
+                id="paper_transformer_001",
+                title="Attention Is All You Need",
+                authors=["Vaswani et al."],
+                year=2017,
+                open_access_url="https://example.org/attention-is-all-you-need.pdf",
+            ),
+            PaperMetadataSchema(
+                id="paper_transformer_002",
+                title="BERT: Pre-training of Deep Bidirectional Transformers",
+                authors=["Devlin et al."],
+                year=2018,
+                open_access_url="https://example.org/bert-pretraining.pdf",
+            ),
         ]
     monkeypatch.setattr("agents.nodes.search_academic_papers", mock_search_fn)
 
-    async def mock_validate_fn(paper, **kwargs):
-        pid = getattr(paper, "id", None) or getattr(paper, "paper_id", "paper_transformer_001")
-        return PaperValidationResultSchema(status=ValidationStatus.VERIFIED, paper_id=pid)
+    async def mock_validate_fn(paper, paper_id=None, **kwargs):
+        return PaperValidationResultSchema(status=ValidationStatus.VERIFIED, paper_id=paper_id or paper.id)
     monkeypatch.setattr("agents.nodes.validate_paper_metadata", mock_validate_fn)
 
     async def mock_read_paper(file_path_or_url, paper_id=None, **kwargs):
@@ -105,8 +130,23 @@ def test_complete_frontend_user_journey(api_client, monkeypatch):
     )
     assert res_resume.status_code == 200
     resume_data = res_resume.json()
-    assert resume_data["status"] in ("GOAL_ACHIEVED", "COMPLETED")
+    assert resume_data["status"] == "GOAL_ACHIEVED"
     assert resume_data["plan"] is not None
+    assert all(task["status"] == "COMPLETED" for task in resume_data["plan"])
+    assert sorted(resume_data["extracted_papers"]) == ["paper_transformer_001", "paper_transformer_002"]
+    assert resume_data["retrieved_evidence"], "RAG retrieval should run over the indexed papers"
+    assert set(resume_data["citations"]) == {"paper_transformer_001", "paper_transformer_002"}
+    executed = [log["tool"] for log in resume_data["observable_logs"] if log["node"] == "execute_tools"]
+    for tool in ("search_academic_papers", "validate_metadata_integrity", "read_research_paper",
+                 "retrieve_research_context", "compare_research_papers", "analyze_research_methodology",
+                 "analyze_experimental_results", "identify_research_gaps", "generate_citations",
+                 "generate_research_comparison_report"):
+        assert tool in executed, f"{tool} was not executed"
+    # No tool ran twice with identical inputs (only the two distinct PDFs repeat a tool name).
+    assert executed.count("read_research_paper") == 2
+    assert len(executed) == len(set(executed)) + 1
+    # The offline router was the one consulted, so no provider could be called.
+    assert offline_llm_router.generate.called
     assert len(resume_data["observable_logs"]) > 0
     assert resume_data["final_report"] is not None
     final_rep = resume_data["final_report"]
@@ -120,6 +160,7 @@ def test_complete_frontend_user_journey(api_client, monkeypatch):
     assert "reports" in archive_data
     archived_ids = [r["report_id"] for r in archive_data["reports"]]
     assert report_id in archived_ids
+    assert len(archived_ids) == len(set(archived_ids)), "each report must be listed once"
 
     # 7. Verify Markdown export with attachment download header
     res_md = api_client.get(f"/api/v1/reports/{report_id}/export?format=markdown")

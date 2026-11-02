@@ -2,44 +2,95 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Sidebar } from "@/components/Sidebar";
+import { DashboardView } from "@/components/DashboardView";
 import { ResearchQueryInput } from "@/components/ResearchQueryInput";
 import { ClarificationBanner } from "@/components/ClarificationBanner";
 import { ExecutionProgress } from "@/components/ExecutionProgress";
 import { ResearchResultsView } from "@/components/ResearchResultsView";
-import { airaApi, ApiClientError } from "@/services/api";
+import { ReportsView, type ReportSummary } from "@/components/ReportsView";
+import { RepositoryView } from "@/components/RepositoryView";
+import { airaApi } from "@/services/api";
 import { ResearchResponse, SystemHealth } from "@/types/aira";
-import { AlertCircle, RefreshCw, Layers, FileText } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 
 export default function Home() {
-  const [currentTab, setCurrentTab] = useState("workspace");
+  const [currentTab, setCurrentTab] = useState("dashboard");
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [currentSession, setCurrentSession] = useState<ResearchResponse | null>(null);
   const [historySessions, setHistorySessions] = useState<Array<{ id: string; query: string; status: string; date: string }>>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [activeQueryDraft, setActiveQueryDraft] = useState<string>("");
 
   // Repository & Reports tabs data
-  const [indexedPapers, setIndexedPapers] = useState<any[]>([]);
-  const [savedReports, setSavedReports] = useState<any[]>([]);
+  const [indexedPapers, setIndexedPapers] = useState<string[]>([]);
+  const [savedReports, setSavedReports] = useState<ReportSummary[]>([]);
 
   // Polling guards
   const isPollingRef = useRef(false);
   const failureCountRef = useRef(0);
 
+  const fetchHealth = async () => {
+    try {
+      const data = await airaApi.getHealth();
+      setHealth(data);
+    } catch {
+      setHealth(null);
+    }
+  };
+
+  const loadReportsList = async () => {
+    try {
+      const data = await airaApi.listReports();
+      setSavedReports((data.reports || []) as ReportSummary[]);
+    } catch {}
+  };
+
+  const loadPapersList = async () => {
+    try {
+      const data = await airaApi.listPapers();
+      setIndexedPapers(data.extracted_papers || data.papers || []);
+    } catch {}
+  };
+
+  const restoreSession = async (sessionId: string) => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const res = await airaApi.getSession(sessionId);
+      setCurrentSession(res);
+    } catch {
+      setErrorMessage(
+        `Session '${sessionId}' could not be restored because the backend checkpoint expired or was cleared. You can start a new research session.`
+      );
+      setHistorySessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, status: "EXPIRED" } : s))
+      );
+      try {
+        localStorage.removeItem("aira_active_session_id");
+      } catch {}
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Restore session history & active session from localStorage on initial load
   useEffect(() => {
-    fetchHealth();
-    loadReportsList();
-    loadPapersList();
+    queueMicrotask(() => {
+      fetchHealth();
+      loadReportsList();
+      loadPapersList();
+    });
 
     try {
       const savedHistory = localStorage.getItem("aira_history_sessions");
       if (savedHistory) {
-        setHistorySessions(JSON.parse(savedHistory));
+        const parsedHistory = JSON.parse(savedHistory);
+        queueMicrotask(() => setHistorySessions(parsedHistory));
       }
       const lastSessionId = localStorage.getItem("aira_active_session_id");
       if (lastSessionId) {
-        restoreSession(lastSessionId);
+        queueMicrotask(() => restoreSession(lastSessionId));
       }
     } catch {
       // Storage unavailable or disabled
@@ -103,7 +154,7 @@ export default function Home() {
           loadReportsList();
           loadPapersList();
         }
-      } catch (err: any) {
+      } catch {
         failureCountRef.current += 1;
         if (failureCountRef.current >= 3) {
           clearInterval(intervalId);
@@ -120,50 +171,6 @@ export default function Home() {
       clearInterval(intervalId);
     };
   }, [currentSession?.session_id, currentSession?.status]);
-
-  const restoreSession = async (sessionId: string) => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    try {
-      const res = await airaApi.getSession(sessionId);
-      setCurrentSession(res);
-    } catch (err: any) {
-      setErrorMessage(
-        `Session '${sessionId}' could not be restored because the backend checkpoint expired or was cleared. You can start a new research session.`
-      );
-      setHistorySessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, status: "EXPIRED" } : s))
-      );
-      try {
-        localStorage.removeItem("aira_active_session_id");
-      } catch {}
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const fetchHealth = async () => {
-    try {
-      const data = await airaApi.getHealth();
-      setHealth(data);
-    } catch {
-      setHealth(null);
-    }
-  };
-
-  const loadReportsList = async () => {
-    try {
-      const data = await airaApi.listReports();
-      setSavedReports(data.reports || []);
-    } catch {}
-  };
-
-  const loadPapersList = async () => {
-    try {
-      const data = await airaApi.listPapers();
-      setIndexedPapers(data.extracted_papers || data.papers || []);
-    } catch {}
-  };
 
   // Start new session
   const handleStartSession = async (query: string) => {
@@ -183,8 +190,8 @@ export default function Home() {
         },
         ...prev.filter((p) => p.id !== res.session_id),
       ]);
-    } catch (err: any) {
-      setErrorMessage(err.message || "Failed to start research investigation.");
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to start research investigation.");
     } finally {
       setIsLoading(false);
       loadReportsList();
@@ -204,8 +211,8 @@ export default function Home() {
       setHistorySessions((prev) =>
         prev.map((s) => (s.id === res.session_id ? { ...s, status: res.status } : s))
       );
-    } catch (err: any) {
-      setErrorMessage(err.message || "Failed to resume session.");
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to resume session.");
     } finally {
       setIsLoading(false);
       loadReportsList();
@@ -221,7 +228,7 @@ export default function Home() {
     try {
       const res = await airaApi.getSession(sessionId);
       setCurrentSession(res);
-    } catch (err: any) {
+    } catch {
       setErrorMessage(
         `Could not retrieve session '${sessionId}' (checkpoint may have expired after backend restart).`
       );
@@ -233,8 +240,13 @@ export default function Home() {
     }
   };
 
+  const handleLaunchPresetFromDashboard = (presetQuery: string) => {
+    setActiveQueryDraft(presetQuery);
+    setCurrentTab("workspace");
+  };
+
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
+    <div className="flex h-screen bg-[#090d16] text-slate-100 font-sans overflow-hidden">
       {/* Sidebar Navigation */}
       <Sidebar
         currentTab={currentTab}
@@ -243,6 +255,7 @@ export default function Home() {
           setCurrentSession(null);
           setCurrentTab("workspace");
           setErrorMessage(null);
+          setActiveQueryDraft("");
         }}
         health={health}
         historySessions={historySessions}
@@ -251,11 +264,11 @@ export default function Home() {
       />
 
       {/* Main Content Workspace */}
-      <main className="flex-1 overflow-y-auto p-8 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
+      <main className="flex-1 overflow-y-auto p-6 sm:p-8 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
         {/* Error notification banner */}
         {errorMessage && (
-          <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/40 text-rose-200 text-sm flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2">
+          <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-500/40 text-rose-200 text-sm flex items-center justify-between gap-4 max-w-6xl mx-auto shadow-lg">
+            <div className="flex items-center gap-2.5">
               <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
               <span>{errorMessage}</span>
             </div>
@@ -269,7 +282,7 @@ export default function Home() {
                     localStorage.removeItem("aira_active_session_id");
                   } catch {}
                 }}
-                className="text-xs bg-rose-900/60 hover:bg-rose-900 text-rose-200 px-2.5 py-1 rounded border border-rose-700/50 transition-colors"
+                className="text-xs bg-rose-900/60 hover:bg-rose-900 text-rose-200 px-3 py-1.5 rounded-xl border border-rose-700/50 transition-colors font-medium"
               >
                 Start New Session
               </button>
@@ -283,11 +296,31 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 1: Workspace */}
+        {/* Tab 0: Dashboard */}
+        {currentTab === "dashboard" && (
+          <DashboardView
+            onStartNew={() => {
+              setCurrentSession(null);
+              setCurrentTab("workspace");
+              setActiveQueryDraft("");
+            }}
+            onOpenWorkspace={() => setCurrentTab("workspace")}
+            onSelectSession={handleSelectSession}
+            historySessions={historySessions}
+            indexedPapersCount={indexedPapers.length}
+            reportsCount={savedReports.length}
+            health={health}
+            onSelectQueryPreset={handleLaunchPresetFromDashboard}
+          />
+        )}
+
+        {/* Tab 1: Investigation Workspace */}
         {currentTab === "workspace" && (
           <div className="space-y-6 max-w-6xl mx-auto">
             {/* Top Formulation Input */}
             <ResearchQueryInput
+              key={activeQueryDraft}
+              initialQuery={activeQueryDraft}
               onSubmit={handleStartSession}
               isLoading={isLoading}
             />
@@ -329,109 +362,18 @@ export default function Home() {
 
         {/* Tab 2: Comparative Reports Archive */}
         {currentTab === "reports" && (
-          <div className="space-y-6 max-w-5xl mx-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div>
-                <h2 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-indigo-400" />
-                  Comparative Research Reports Archive
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Published multi-paper comparative synthesis documents
-                </p>
-              </div>
-              <button
-                onClick={loadReportsList}
-                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800"
-              >
-                <RefreshCw className="w-3.5 h-3.5" /> Refresh
-              </button>
-            </div>
-
-            {savedReports.length === 0 ? (
-              <div className="text-center py-16 bg-slate-900/40 rounded-2xl border border-slate-800 text-slate-500">
-                <FileText className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                <p>No comparative reports archived yet. Run an investigation in the workspace to generate reports.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-4">
-                {savedReports.map((r) => (
-                  <div key={r.report_id} className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex items-start justify-between gap-4">
-                    <div className="space-y-1.5">
-                      <h3 className="text-sm font-bold text-white">{r.research_question}</h3>
-                      <p className="text-xs text-slate-400">
-                        Analyzed: {r.papers_analyzed?.join(", ") || "Corpus"} • Created: {new Date(r.created_at).toLocaleString()}
-                      </p>
-                      <span className="text-[10px] font-mono text-indigo-400 block">ID: {r.report_id}</span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <a
-                        href={airaApi.getReportExportUrl(r.report_id, "markdown")}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 font-medium"
-                      >
-                        Markdown
-                      </a>
-                      <a
-                        href={airaApi.getReportExportUrl(r.report_id, "json")}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 font-medium"
-                      >
-                        JSON
-                      </a>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <ReportsView
+            savedReports={savedReports}
+            onRefresh={loadReportsList}
+          />
         )}
 
         {/* Tab 3: Indexed Papers & RAG Repository */}
         {currentTab === "repository" && (
-          <div className="space-y-6 max-w-5xl mx-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div>
-                <h2 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-emerald-400" />
-                  Indexed Knowledge Base & RAG Corpus
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Extracted academic papers and semantic search chunks stored in ChromaDB
-                </p>
-              </div>
-              <button
-                onClick={loadPapersList}
-                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800"
-              >
-                <RefreshCw className="w-3.5 h-3.5" /> Refresh
-              </button>
-            </div>
-
-            {indexedPapers.length === 0 ? (
-              <div className="text-center py-16 bg-slate-900/40 rounded-2xl border border-slate-800 text-slate-500">
-                <Layers className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                <p>No papers extracted or indexed yet in the persistent repository.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {indexedPapers.map((paperId, i) => (
-                  <div key={i} className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
-                    <div>
-                      <span className="text-xs font-mono font-semibold text-white block">{paperId}</span>
-                      <span className="text-[10px] text-emerald-400 font-medium">Extracted & Vector Indexed</span>
-                    </div>
-                    <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">
-                      PyMuPDF
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <RepositoryView
+            indexedPapers={indexedPapers}
+            onRefresh={loadPapersList}
+          />
         )}
       </main>
     </div>

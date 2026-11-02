@@ -342,9 +342,10 @@ async def test_reliability_evaluator():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_full_evaluation_runner_and_report_generation():
+async def test_full_evaluation_runner_and_report_generation(tmp_path):
     """Verify complete evaluation runner produces valid JSON and Markdown reports."""
-    results = await run_all_evaluations()
+    # Write into a temp dir: the committed evaluation report must not be overwritten by tests.
+    results = await run_all_evaluations(output_dir=tmp_path)
 
     assert "academic_search" in results
     assert "pdf_extraction" in results

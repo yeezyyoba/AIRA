@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class ResearchRequest(BaseModel):
     """Schema for initiating an agentic research session."""
-    query: str = Field(..., min_length=3, description="Academic research question or topic")
+    query: str = Field(..., min_length=3, max_length=1000, description="Academic research question or topic")
     year_from: Optional[int] = Field(None, ge=1900, le=2100)
     year_to: Optional[int] = Field(None, ge=1900, le=2100)
     max_results: int = Field(default=20, ge=1, le=100)
@@ -29,11 +29,15 @@ class ResearchResponse(BaseModel):
     identified_gaps: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     citations: Optional[Dict[str, Any]] = Field(default_factory=dict)
     is_degraded: Optional[bool] = False
+    retrieved_evidence: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    phase_statuses: Optional[Dict[str, str]] = Field(default_factory=dict)
+    step_count: Optional[int] = None
+    max_steps: Optional[int] = None
 
 
 class ResearchResumeRequest(BaseModel):
     """Request payload for resuming a paused research session with clarification."""
-    clarification_response: str = Field(..., min_length=1, description="User's clarification response or answers")
+    clarification_response: str = Field(..., min_length=1, max_length=2000, description="User's clarification response or answers")
 
 
 # =====================================================================

@@ -10,13 +10,11 @@ Generates comprehensive, cited academic research comparison reports combining:
 
 Supports exporting reports to Markdown and JSON formats.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 import uuid
 
-from app.core.config import settings
 from llm.model_router import ModelRouter, model_router as default_model_router
 from logging_config.logger import get_logger
 from memory.vector_store import ChromaVectorStore, vector_store as default_vector_store
@@ -26,7 +24,9 @@ from tools.methodology_analyzer import analyze_research_methodology
 from tools.paper_comparator import compare_research_papers
 from tools.result_analyzer import analyze_experimental_results
 from validation.schemas import (
+    MethodologyAnalysisSchema,
     MetricComparisonResultSchema,
+    PaperComparisonSchema,
     ResearchComparisonReportSchema,
     ResearchGapSchema,
 )
@@ -40,8 +40,15 @@ async def generate_research_comparison_report(
     repository: Optional[PaperRepository] = None,
     vector_db: Optional[ChromaVectorStore] = None,
     router: Optional[ModelRouter] = None,
+    precomputed: Optional[Dict[str, Any]] = None,
 ) -> ResearchComparisonReportSchema:
-    """Generate a structured 11-section research comparison report with traceable citations."""
+    """Generate a structured 11-section research comparison report with traceable citations.
+
+    ``precomputed`` may carry analyses the agent already executed (comparison,
+    methodologies, metric_tables, gaps, citations). They are reused instead of
+    re-running the tools, so the report reflects exactly the evidence the agent
+    gathered and no LLM call is repeated. Missing entries are computed here.
+    """
     if not paper_ids or len(paper_ids) < 2:
         raise ValueError("Report generation requires at least two valid paper_ids")
     if not research_question or not research_question.strip():
@@ -53,27 +60,56 @@ async def generate_research_comparison_report(
     llm = router or default_model_router
 
     report_id = f"report_{uuid.uuid4().hex[:8]}"
-    created_at = datetime.utcnow().isoformat() + "Z"
+    created_at = datetime.now(timezone.utc).isoformat()
+    pre = precomputed or {}
 
-    # 1. Run tools to gather structured factual comparisons
-    comparison = await compare_research_papers(paper_ids, repository=repo, vector_db=store, router=llm)
-    metric_tables = analyze_experimental_results(paper_ids, repository=repo, vector_db=store)
-    gaps_result = await identify_research_gaps(paper_ids, research_area=clean_question, repository=repo, vector_db=store, router=llm)
+    # 1. Reuse or run the tools that gather structured factual comparisons
+    comparison = _coerce(pre.get("comparison"), PaperComparisonSchema)
+    if comparison is None or set(comparison.paper_ids) != set(paper_ids):
+        comparison = await compare_research_papers(paper_ids, repository=repo, vector_db=store, router=llm)
+
+    if pre.get("metric_tables") is not None:
+        metric_tables = [
+            m for m in (_coerce(item, MetricComparisonResultSchema) for item in pre["metric_tables"]) if m
+        ]
+    else:
+        metric_tables = analyze_experimental_results(paper_ids, repository=repo, vector_db=store)
+
+    if pre.get("gaps") is not None:
+        research_gaps = [g for g in (_coerce(item, ResearchGapSchema) for item in pre["gaps"]) if g]
+    else:
+        gaps_result = await identify_research_gaps(
+            paper_ids, research_area=clean_question, repository=repo, vector_db=store, router=llm,
+        )
+        research_gaps = gaps_result.gaps
 
     # 2. Gather individual methodology analyses
+    reused_methodologies = {
+        m.paper_id: m
+        for m in (_coerce(item, MethodologyAnalysisSchema) for item in pre.get("methodologies") or [])
+        if m
+    }
+    citations = pre.get("citations") or {}
     methodologies = {}
     references = []
     for pid in paper_ids:
-        meth = await analyze_research_methodology(pid, repository=repo, vector_db=store, router=llm)
+        meth = reused_methodologies.get(pid)
+        if meth is None:
+            meth = await analyze_research_methodology(pid, repository=repo, vector_db=store, router=llm)
         methodologies[pid] = meth
         p_obj = repo.get_paper(pid)
-        ref_title = p_obj.extracted_data.title if p_obj and p_obj.extracted_data and p_obj.extracted_data.title else pid
-        ref_authors = p_obj.extracted_data.authors if p_obj and p_obj.extracted_data and p_obj.extracted_data.authors else ["Unknown"]
+        verified = (pre.get("paper_metadata") or {}).get(pid) or {}
+        extracted_title = p_obj.extracted_data.title if p_obj and p_obj.extracted_data else None
+        extracted_authors = p_obj.extracted_data.authors if p_obj and p_obj.extracted_data else None
+        ref_title = verified.get("title") or extracted_title or pid
+        ref_authors = verified.get("authors") or extracted_authors or []
+        citation = citations.get(pid) if isinstance(citations.get(pid), dict) else {}
         references.append({
             "paper_id": pid,
             "title": ref_title,
             "authors": ref_authors,
             "page_count": p_obj.page_count if p_obj else 0,
+            "citation_text": citation.get("citation_text"),
         })
 
     is_degraded = llm.is_degraded_mode() if llm else False
@@ -153,11 +189,7 @@ async def generate_research_comparison_report(
             strengths_text += "- No dedicated limitations section delineated in paper text.\n"
         strengths_text += "\n"
 
-    conclusions_text = (
-        f"Based on the empirical evidence extracted from {len(paper_ids)} papers, "
-        "models demonstrate domain-specific efficacy on the analyzed benchmarks. "
-        "However, direct cross-paper superiority cannot be claimed where metric variants or evaluation splits diverge."
-    )
+    conclusions_text = _evidence_backed_conclusions(paper_ids, metric_tables, research_gaps)
 
     limitations_analysis_text = (
         f"This analysis is strictly bounded to the {len(paper_ids)} papers currently indexed in the knowledge base. "
@@ -167,6 +199,8 @@ async def generate_research_comparison_report(
 
     return ResearchComparisonReportSchema(
         report_id=report_id,
+        title=f"Research Comparison Report: {clean_question}",
+        report_status="COMPLETE",
         research_question=clean_question,
         papers_analyzed=paper_ids,
         objectives_and_methodology_comparison=obj_meth_text.strip(),
@@ -174,7 +208,7 @@ async def generate_research_comparison_report(
         model_architecture_comparison=arch_text.strip(),
         experimental_results_comparison=exp_text.strip(),
         strengths_and_limitations=strengths_text.strip(),
-        research_gaps=gaps_result.gaps,
+        research_gaps=research_gaps,
         evidence_backed_conclusions=conclusions_text.strip(),
         limitations_of_analysis=limitations_analysis_text.strip(),
         references=references,
@@ -184,10 +218,59 @@ async def generate_research_comparison_report(
     )
 
 
+def _coerce(value: Any, schema: Any) -> Any:
+    """Return ``value`` as ``schema`` if possible, else None (never raises)."""
+    if value is None:
+        return None
+    if isinstance(value, schema):
+        return value
+    if isinstance(value, dict):
+        try:
+            return schema(**value)
+        except Exception as exc:
+            logger.warning("Ignoring precomputed %s that failed validation: %s", schema.__name__, exc)
+    return None
+
+
+def _evidence_backed_conclusions(
+    paper_ids: List[str],
+    metric_tables: List[MetricComparisonResultSchema],
+    research_gaps: List[ResearchGapSchema],
+) -> str:
+    """Build conclusions strictly from computed comparisons; never generic claims."""
+    lines: List[str] = []
+    for table in metric_tables:
+        metric = table.metric_name.upper()
+        if table.compatibility.value == "COMPATIBLE" and table.ranked_models:
+            best = table.ranked_models[0]
+            page = best.get("page_number")
+            page_note = f", page {page}" if page is not None else ""
+            lines.append(
+                f"- On {metric} ({table.goal.value.replace('_', ' ').lower()}), the best reported comparable result is "
+                f"{best.get('model_name')} with {best.get('score')} ({best.get('paper_id')}{page_note})."
+            )
+        else:
+            reason = table.incompatibility_reason or "evaluation conditions are not comparable or not reported"
+            reason = " ".join(reason.split())
+            if len(reason) > 300:
+                reason = reason[:297].rstrip() + "..."
+            lines.append(f"- {metric}: no cross-paper ranking is made because {reason}.")
+    if research_gaps:
+        lines.append(f"- {len(research_gaps)} research gap(s) were identified from the papers' own reported limitations and differences.")
+    if not lines:
+        return (
+            f"The {len(paper_ids)} analyzed papers did not report metrics that can be compared on equal terms, "
+            "so no empirical ranking or superiority claim is made. See the dimension-by-dimension comparison above."
+        )
+    return "Conclusions are limited to what the extracted evidence supports:\n" + "\n".join(lines)
+
+
 def export_report_markdown(report: ResearchComparisonReportSchema) -> str:
     """Export comparison report to a structured, publication-ready Markdown document."""
     md = []
-    md.append(f"# Research Comparison Report: {report.research_question}\n")
+    md.append(f"# {report.title or ('Research Comparison Report: ' + report.research_question)}\n")
+    if report.report_status and report.report_status != "COMPLETE":
+        md.append(f"> **Status**: {report.report_status} — sections marked 'Not established' lack sufficient evidence.\n")
     md.append(f"*Report ID*: {report.report_id} | *Generated*: {report.created_at}\n")
     if report.is_degraded:
         md.append("> **Notice**: Generated in Degraded Mode (Deterministic extraction active; LLM reasoning unavailable).\n")
@@ -198,7 +281,7 @@ def export_report_markdown(report: ResearchComparisonReportSchema) -> str:
     md.append("## 2. Papers Analyzed")
     for ref in report.references:
         authors = ", ".join(ref.get("authors", [])) if isinstance(ref.get("authors"), list) else str(ref.get("authors"))
-        md.append(f"- **{ref['paper_id']}**: *{ref['title']}* ({authors}) [{ref.get('page_count', 0)} pages]")
+        md.append(f"- **{ref.get('paper_id')}**: *{ref.get('title')}* ({authors or 'authors not reported'}) [{ref.get('page_count', 0)} pages]")
     md.append("")
 
     md.append("## 3. Comparison of Objectives and Methodologies")
@@ -249,12 +332,17 @@ def export_report_markdown(report: ResearchComparisonReportSchema) -> str:
 
     md.append("## 11. References to Original Papers")
     for idx, ref in enumerate(report.references, start=1):
-        md.append(f"[{idx}] **{ref['paper_id']}**: {ref['title']}. Pages: {ref.get('page_count', 0)}.")
+        if ref.get("citation_text"):
+            md.append(f"[{idx}] {ref['citation_text']}")
+        else:
+            md.append(f"[{idx}] **{ref.get('paper_id')}**: {ref.get('title')}. Pages: {ref.get('page_count', 0)}.")
     md.append("")
 
+    md.append("---")
+    md.append("*Generated by AIRA (Amharic Intelligent Research Assistant). Content is bounded to the extracted evidence listed above.*")
     return "\n".join(md)
 
 
 def export_report_json(report: ResearchComparisonReportSchema) -> str:
     """Export comparison report to a standardized JSON string."""
-    return json.dumps(report.model_dump(), indent=2, ensure_ascii=False)
+    return json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False)

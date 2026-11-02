@@ -6,6 +6,7 @@ and indexed paper repository management.
 from pathlib import Path
 import re
 from typing import Optional
+from logging_config.logger import get_logger
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from app.core.config import settings
@@ -43,6 +44,7 @@ from tools.paper_reader import read_research_paper
 from tools.rag_retriever import retrieve_research_context
 
 router = APIRouter()
+logger = get_logger("api.papers")
 
 
 @router.get("/", tags=["Papers"])
@@ -115,8 +117,8 @@ async def read_paper_endpoint(request: PaperReadRequest) -> PaperExtractionRespo
         if result.status != "FAILED":
             try:
                 paper_repository.save_paper(result)
-            except Exception:
-                pass
+            except Exception as save_err:
+                logger.error("Extracted paper '%s' could not be saved: %s", result.paper_id, save_err)
 
         return PaperExtractionResponse(
             paper_id=result.paper_id,
@@ -137,12 +139,12 @@ async def read_paper_endpoint(request: PaperReadRequest) -> PaperExtractionRespo
         )
     except PDFSizeExceededError as e:
         raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            status_code=413,
             detail=str(e),
         )
     except InvalidPDFError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail=str(e),
         )
     except PDFDownloadError as e:
@@ -192,7 +194,7 @@ async def upload_paper_endpoint(
             total_size += len(chunk)
             if total_size > settings.MAX_PDF_SIZE_BYTES:
                 raise HTTPException(
-                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    status_code=413,
                     detail=f"Uploaded file exceeds limit of {settings.MAX_PDF_SIZE_BYTES} bytes",
                 )
             content_chunks.append(chunk)
@@ -210,7 +212,7 @@ async def upload_paper_endpoint(
             try:
                 paper_repository.save_paper(result)
             except Exception as save_err:
-                pass
+                logger.error("Uploaded paper '%s' could not be saved: %s", result.paper_id, save_err)
 
         return PaperExtractionResponse(
             paper_id=result.paper_id,
@@ -228,7 +230,7 @@ async def upload_paper_endpoint(
         raise
     except PDFSizeExceededError as e:
         raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            status_code=413,
             detail=str(e),
         )
     except TimeoutError as e:
@@ -238,7 +240,7 @@ async def upload_paper_endpoint(
         )
     except InvalidPDFError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail=str(e),
         )
     except Exception as e:
@@ -280,7 +282,7 @@ async def index_paper_endpoint(
         )
     except UnusablePaperTextError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail=str(e),
         )
     except IncompatibleEmbeddingModelError as e:

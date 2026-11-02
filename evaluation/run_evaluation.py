@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 import traceback
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
@@ -373,7 +373,7 @@ async def _run_one(name: str, evaluator: Any) -> Dict[str, Any]:
         }
 
 
-async def run_all_evaluations() -> Dict[str, Any]:
+async def run_all_evaluations(output_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Run all evaluators independently and save complete or partial results."""
     print("=" * 70)
     print("AIRA Phase 9: System Evaluation and Reliability Testing")
@@ -405,11 +405,12 @@ async def run_all_evaluations() -> Dict[str, Any]:
             print("      -> Completed")
 
         # Persist after each evaluator so an interruption does not lose all progress.
-        base_dir = Path(__file__).resolve().parent
+        base_dir = Path(output_dir) if output_dir else Path(__file__).resolve().parent
+        base_dir.mkdir(parents=True, exist_ok=True)
         json_path = base_dir / "evaluation_results.json"
         json_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
-    base_dir = Path(__file__).resolve().parent
+    base_dir = Path(output_dir) if output_dir else Path(__file__).resolve().parent
     json_path = base_dir / "evaluation_results.json"
     md_path = base_dir / "evaluation_report.md"
     json_path.write_text(json.dumps(results, indent=2), encoding="utf-8")

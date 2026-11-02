@@ -12,7 +12,7 @@ The system combines:
 - Gemini and Groq for language-model reasoning and fallback.
 - Seven research execution tools.
 - ChromaDB for vector-based research retrieval.
-- SQLite for application data.
+- Local JSON files for extracted papers and generated reports (SQLite is configured but not yet used).
 
 The architecture separates user interaction, agent orchestration, research tools, and data storage.
 
@@ -46,7 +46,7 @@ flowchart TD
     CHECK --> REFLECT[Reflection and Critique]
     REFLECT --> REPORT[Research Report]
 
-    API <--> SQLITE[(SQLite)]
+    API <--> FILES_STORE[(JSON paper & report files)]
     API <--> CHROMA[(ChromaDB)]
     AGENT -. In-process checkpointing .-> MEMORY[MemorySaver]
 ```
@@ -137,9 +137,13 @@ They provide:
 
 ## 4. Data and Storage Architecture
 
-### SQLite
+### Local file storage
 
-SQLite supports application-level structured data and persistence.
+Extracted papers are stored as JSON in `PROCESSED_DIRECTORY`. Generated reports are
+saved as JSON and Markdown in `REPORTS_DIRECTORY` by the File Management tool, so the
+report archive survives restarts. Research sessions are held in LangGraph's in-memory
+checkpointer and do **not** survive a restart. `DATABASE_URL` (SQLite) is configured,
+but no component reads or writes it yet.
 
 ### ChromaDB
 

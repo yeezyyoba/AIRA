@@ -59,7 +59,7 @@ flowchart TD
     V --> R[Reflection and Critique]
     R --> D[Research Report]
 
-    API <--> DB[(SQLite Application Data)]
+    API <--> DB[(JSON paper & report files)]
     API <--> CH[(ChromaDB)]
     G -. In-process checkpoints .-> MS[LangGraph MemorySaver]
 ```
@@ -149,7 +149,7 @@ The agent also uses meta-tools for:
 
 ### Data and evaluation
 
-- SQLite
+- Local JSON storage (SQLite configured, not yet used)
 - Pandas
 - NumPy
 - scikit-learn
@@ -357,7 +357,12 @@ For the six evaluated questions:
 
 The last recorded full backend regression suite completed with:
 
-**197 tests passed, 7 warnings.**
+**246 tests passed** (Python 3.11 and 3.13), run with `python -m pytest tests`.
+
+`tests/conftest.py` isolates every test run: API keys are blanked, embeddings are
+mocked, data directories point to a temporary folder, and outbound network
+connections are refused. Tests therefore never call Gemini, Groq, academic APIs,
+or PDF hosts, and never modify `data/` or the committed evaluation report.
 
 The frontend production build also completed successfully during Phase 8 verification.
 

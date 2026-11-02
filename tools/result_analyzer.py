@@ -485,7 +485,8 @@ def analyze_experimental_results(
                 norm_ds = set(str(d).strip().lower() for d in dataset_names if d)
                 if len(norm_ds) > 1:
                     compatibility = MetricCompatibility.INCOMPATIBLE
-                    incomp_reason = f"Incompatible datasets: papers evaluated on different datasets ({', '.join(sorted(norm_ds))}). Cross-dataset metric ranking is invalid."
+                    shown = [" ".join(d.split())[:60] for d in sorted(norm_ds)]
+                    incomp_reason = f"Incompatible datasets: papers evaluated on different datasets ({'; '.join(shown)}). Cross-dataset metric ranking is invalid."
                     warnings.append(incomp_reason)
 
         # E. Evaluation Split Compatibility Check across distinct papers

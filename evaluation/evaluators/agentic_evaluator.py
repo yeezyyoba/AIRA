@@ -106,7 +106,7 @@ class AgenticEvaluator:
             "step_count": 1,
             "max_steps": 15,
             "selected_tool": scenario["failing_tool"],
-            "tool_parameters": {"query": "nmt"},
+            "tool_inputs": {"query": "nmt"},
             "validation_status": "ERROR",
             "retry_counts": {},
             "errors": ["Timeout connecting to OpenAlex API"],
@@ -138,7 +138,7 @@ class AgenticEvaluator:
             "step_count": 4,
             "max_steps": 15,
             "selected_tool": scenario["failing_tool"],
-            "tool_parameters": {"query": "nmt"},
+            "tool_inputs": {"query": "nmt"},
             "validation_status": "ERROR",
             "retry_counts": {scenario["failing_tool"]: 2},  # already retried twice
             "errors": ["Persistent provider timeout"],

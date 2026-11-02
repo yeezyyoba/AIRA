@@ -328,6 +328,8 @@ class ResearchGapsResultSchema(BaseModel):
 class ResearchComparisonReportSchema(BaseModel):
     """Comprehensive 11-section cited research comparison report."""
     report_id: str
+    title: Optional[str] = None
+    report_status: str = Field(default="COMPLETE", description="COMPLETE or PARTIAL (insufficient evidence)")
     research_question: str
     papers_analyzed: List[str]
     objectives_and_methodology_comparison: str

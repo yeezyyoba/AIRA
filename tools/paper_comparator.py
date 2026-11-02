@@ -9,6 +9,7 @@ Compares multiple extracted and indexed research papers across standardized dime
 - Evaluation metrics and reported results
 - Limitations and future work
 """
+import asyncio
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -91,15 +92,15 @@ def _extract_dimension_value(paper: PaperExtractionResultSchema, dim_name: str) 
 
 
 def _sanitize_untrusted_text(text: Optional[str]) -> str:
-    """Sanitize paper text to prevent closing of untrusted delimiter boundary."""
+    """Neutralise markup in untrusted paper text before it enters an LLM prompt.
+
+    Every angle bracket is escaped, so no variant of a closing delimiter
+    (any case, extra whitespace, attributes) can terminate the untrusted
+    block and smuggle instructions outside it.
+    """
     if not text:
         return ""
-    # Escape tags that could prematurely close the untrusted boundary
-    sanitized = text.replace("</untrusted_academic_comparison_data>", "&lt;/untrusted_academic_comparison_data&gt;")
-    sanitized = sanitized.replace("<untrusted_academic_comparison_data>", "&lt;untrusted_academic_comparison_data&gt;")
-    sanitized = sanitized.replace("</untrusted_paper_data>", "&lt;/untrusted_paper_data&gt;")
-    sanitized = sanitized.replace("<untrusted_paper_data", "&lt;untrusted_paper_data")
-    return sanitized
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def validate_synthesis_claims(
@@ -365,7 +366,8 @@ async def compare_research_papers(
     if not is_degraded and llm and has_sufficient_context:
         try:
             prompt = _build_context_prompt_for_llm(paper_ids, loaded_papers, matrix)
-            resp = llm.generate(prompt=prompt, temperature=0.2)
+            # The provider SDKs are synchronous; keep them off the event loop.
+            resp = await asyncio.to_thread(llm.generate, prompt=prompt, temperature=0.2)
             content = resp.content.strip() if resp and resp.content else ""
             if content and len(content) > 30:
                 synthesis, unverified_claims = validate_synthesis_claims(content, loaded_papers, matrix)

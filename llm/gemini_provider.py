@@ -4,9 +4,9 @@ Integrates with the official Google Gen AI SDK (google-genai) with robust
 error classification for quotas, auth, rate limits, and network issues.
 """
 from dataclasses import dataclass
-import json
+import re
 import time
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Optional, Type
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -14,6 +14,7 @@ from google.genai import types
 from app.core.config import settings
 from llm.provider_errors import (
     AuthenticationError,
+    BadRequestError,
     InvalidResponseError,
     ModelNotFoundError,
     ProviderStatus,
@@ -40,6 +41,13 @@ class LLMResponse:
     raw_response: Optional[Any] = None
 
 
+def strip_json_fences(raw_text: str) -> str:
+    """Remove a surrounding Markdown code fence from model JSON output, if present."""
+    text = (raw_text or "").strip()
+    match = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1) if match else text
+
+
 class GeminiProvider:
     """Primary LLM provider using Google GenAI SDK."""
 
@@ -59,7 +67,10 @@ class GeminiProvider:
             self._client = client
         elif self.api_key:
             try:
-                self._client = genai.Client(api_key=self.api_key)
+                self._client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=types.HttpOptions(timeout=int(settings.LLM_TIMEOUT_SECONDS * 1000)),
+                )
             except Exception as e:
                 logger.error(f"Failed to initialize Gemini client: {e}")
                 self.status = ProviderStatus.AUTHENTICATION_ERROR
@@ -84,18 +95,21 @@ class GeminiProvider:
 
         logger.error(f"Gemini API error [{err_type}]: {error}")
 
+        def has_code(code: str) -> bool:
+            return re.search(rf"\b{code}\b", err_msg) is not None
+
         if (
             "api_key_invalid" in err_msg
-            or "invalid_argument" in err_msg
+            or "api key not valid" in err_msg
             or "permission_denied" in err_msg
             or "unauthenticated" in err_msg
-            or "401" in err_msg
-            or "403" in err_msg
+            or has_code("401")
+            or has_code("403")
         ):
             self.status = ProviderStatus.AUTHENTICATION_ERROR
             raise AuthenticationError(f"Gemini authentication failed: {error}", provider=self.name)
 
-        if "not_found" in err_msg or "404" in err_msg:
+        if "not_found" in err_msg or has_code("404"):
             self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
             raise ModelNotFoundError(
                 f"Gemini model '{self.model}' is unavailable or not found: {error}",
@@ -106,7 +120,7 @@ class GeminiProvider:
             self.status = ProviderStatus.QUOTA_EXHAUSTED
             raise QuotaExceededError(f"Gemini quota exhausted: {error}", provider=self.name)
 
-        if "429" in err_msg or "rate limit" in err_msg:
+        if has_code("429") or "rate limit" in err_msg:
             self.status = ProviderStatus.RATE_LIMITED
             raise RateLimitError(f"Gemini rate limit exceeded: {error}", provider=self.name)
 
@@ -115,11 +129,17 @@ class GeminiProvider:
             or "deadline_exceeded" in err_msg
             or "timeout" in err_msg
             or "connection" in err_msg
-            or "503" in err_msg
-            or "500" in err_msg
+            or has_code("503")
+            or has_code("500")
+            or has_code("502")
+            or has_code("504")
         ):
             self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
             raise ProviderUnavailableError(f"Gemini service temporarily unavailable: {error}", provider=self.name)
+
+        # A rejected request (bad schema, oversize context, ...) is not an auth problem.
+        if "invalid_argument" in err_msg or has_code("400"):
+            raise BadRequestError(f"Gemini rejected the request: {error}", provider=self.name)
 
         # Default fallback to ProviderUnavailableError for unknown transient issues
         self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
@@ -218,7 +238,7 @@ class GeminiProvider:
             raise InvalidResponseError("Gemini returned empty structured content.", provider=self.name)
 
         try:
-            validated_obj = schema.model_validate_json(raw_text)
+            validated_obj = schema.model_validate_json(strip_json_fences(raw_text))
         except Exception as e:
             logger.error(f"Failed to validate structured JSON against {schema.__name__}: {e}")
             raise InvalidResponseError(

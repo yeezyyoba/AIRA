@@ -1,16 +1,18 @@
 "use client";
 
-import React from "react";
-import { 
-  BookOpen, 
-  Search, 
-  History, 
-  FileText, 
-  ShieldCheck, 
-  Sparkles, 
-  PlusCircle, 
-  CheckCircle2, 
-  AlertTriangle 
+import React, { useState } from "react";
+import {
+  BookOpen,
+  Search,
+  History,
+  FileText,
+  Layers,
+  PlusCircle,
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  LayoutDashboard,
+  Cpu
 } from "lucide-react";
 import { SystemHealth } from "@/types/aira";
 
@@ -33,136 +35,193 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeSessionId,
   onSelectSession,
 }) => {
+  const [collapsed, setCollapsed] = useState(false);
+
+  const navItems = [
+    { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { id: "workspace", label: "Investigation Workspace", icon: Search },
+    { id: "reports", label: "Comparative Reports", icon: FileText },
+    { id: "repository", label: "Indexed Papers & RAG", icon: Layers },
+  ];
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case "GOAL_ACHIEVED":
+      case "COMPLETED":
+        return <span className="text-[9px] font-medium text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-1.5 py-0.5 rounded">Completed</span>;
+      case "USER_CLARIFICATION_REQUIRED":
+        return <span className="text-[9px] font-medium text-amber-400 bg-amber-950/40 border border-amber-800/40 px-1.5 py-0.5 rounded">Clarification</span>;
+      case "IN_PROGRESS":
+      case "RUNNING":
+        return <span className="text-[9px] font-medium text-indigo-400 bg-indigo-950/40 border border-indigo-800/40 px-1.5 py-0.5 rounded animate-pulse">Running</span>;
+      case "FAILED":
+      case "SAFETY_STOP":
+        return <span className="text-[9px] font-medium text-rose-400 bg-rose-950/40 border border-rose-800/40 px-1.5 py-0.5 rounded">Failed</span>;
+      default:
+        return <span className="text-[9px] font-medium text-slate-400 bg-slate-800/50 border border-slate-700/50 px-1.5 py-0.5 rounded">{status}</span>;
+    }
+  };
+
   return (
-    <aside className="w-72 bg-slate-900 border-r border-slate-800 text-slate-200 flex flex-col h-screen shrink-0 select-none">
+    <aside
+      className={`bg-slate-900/95 border-r border-slate-800/80 text-slate-200 flex flex-col h-screen shrink-0 select-none transition-all duration-300 relative z-30 ${
+        collapsed ? "w-20" : "w-72"
+      }`}
+    >
       {/* Brand Header */}
-      <div className="p-5 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+      <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
+        <div className="flex items-center space-x-3 overflow-hidden">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-700 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-600/20 shrink-0">
             <BookOpen className="w-5 h-5 text-white" />
           </div>
-          <div>
-            <h1 className="font-bold text-lg text-white tracking-tight flex items-center gap-1.5">
-              AIRA <span className="text-[10px] font-semibold bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded border border-indigo-500/30">v0.1</span>
-            </h1>
-            <p className="text-xs text-slate-400 font-medium">Research Assistant</p>
-          </div>
-        </div>
-      </div>
-
-      {/* New Research Button */}
-      <div className="p-4">
-        <button
-          onClick={onNewSession}
-          className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition-all shadow-md shadow-indigo-600/25 active:scale-[0.98]"
-        >
-          <PlusCircle className="w-4 h-4" />
-          New Investigation
-        </button>
-      </div>
-
-      {/* Navigation Sections */}
-      <div className="flex-1 overflow-y-auto px-3 py-2 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
-        <div>
-          <div className="px-3 text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-            Workspace
-          </div>
-          <nav className="space-y-1">
-            <button
-              onClick={() => onSelectTab("workspace")}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                currentTab === "workspace"
-                  ? "bg-slate-800 text-white border-l-2 border-indigo-500"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-              }`}
-            >
-              <Search className="w-4 h-4 text-cyan-400" />
-              Active Workspace
-            </button>
-            <button
-              onClick={() => onSelectTab("reports")}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                currentTab === "reports"
-                  ? "bg-slate-800 text-white border-l-2 border-indigo-500"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-              }`}
-            >
-              <FileText className="w-4 h-4 text-indigo-400" />
-              Comparative Reports
-            </button>
-            <button
-              onClick={() => onSelectTab("repository")}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                currentTab === "repository"
-                  ? "bg-slate-800 text-white border-l-2 border-indigo-500"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
-              }`}
-            >
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              Indexed Papers & RAG
-            </button>
-          </nav>
-        </div>
-
-        {/* Previous Sessions */}
-        <div>
-          <div className="px-3 text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center justify-between">
-            <span>Recent Sessions</span>
-            <History className="w-3.5 h-3.5" />
-          </div>
-          {historySessions.length === 0 ? (
-            <p className="px-3 text-xs text-slate-500 italic">No previous investigations</p>
-          ) : (
-            <div className="space-y-1">
-              {historySessions.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => onSelectSession(s.id)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors truncate block ${
-                    activeSessionId === s.id
-                      ? "bg-slate-800/90 text-indigo-300 border border-slate-700"
-                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
-                  }`}
-                >
-                  <p className="font-medium truncate">{s.query}</p>
-                  <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
-                    <span className="font-mono">{s.id.slice(0, 8)}</span>
-                    <span>•</span>
-                    <span className={s.status === "GOAL_ACHIEVED" ? "text-emerald-400" : "text-amber-400"}>
-                      {s.status}
-                    </span>
-                  </div>
-                </button>
-              ))}
+          {!collapsed && (
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-base text-white tracking-tight">AIRA</span>
+                <span className="text-[10px] font-mono font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 px-1.5 py-0.5 rounded">
+                  v0.1
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 font-medium truncate">Intelligent Research Assistant</p>
             </div>
           )}
         </div>
+
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800/60 transition-colors"
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {/* Primary Action: New Investigation */}
+      <div className="p-3">
+        <button
+          onClick={onNewSession}
+          className={`w-full flex items-center justify-center gap-2.5 py-2.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs tracking-wide transition-all shadow-md shadow-indigo-600/20 active:scale-[0.98] ${
+            collapsed ? "px-0" : ""
+          }`}
+          title="Start New Investigation"
+        >
+          <PlusCircle className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>New Investigation</span>}
+        </button>
+      </div>
+
+      {/* Navigation Links */}
+      <div className="flex-1 overflow-y-auto px-2 py-2 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
+        <div>
+          {!collapsed && (
+            <div className="px-3 text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+              Platform Navigation
+            </div>
+          )}
+          <nav className="space-y-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = currentTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => onSelectTab(item.id)}
+                  title={collapsed ? item.label : undefined}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+                    isActive
+                      ? "bg-indigo-600/15 text-indigo-300 border border-indigo-500/30 font-semibold"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+                  } ${collapsed ? "justify-center px-0" : ""}`}
+                >
+                  <Icon className={`w-4 h-4 shrink-0 ${isActive ? "text-indigo-400" : "text-slate-400"}`} />
+                  {!collapsed && <span className="truncate">{item.label}</span>}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+
+        {/* Previous Investigation Sessions */}
+        {!collapsed && (
+          <div>
+            <div className="px-3 text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center justify-between">
+              <span>Recent Inquiries</span>
+              <History className="w-3.5 h-3.5 text-slate-500" />
+            </div>
+
+            {historySessions.length === 0 ? (
+              <div className="px-3 py-3 rounded-lg border border-dashed border-slate-800/80 text-center">
+                <p className="text-[11px] text-slate-500 italic">No investigations recorded yet</p>
+              </div>
+            ) : (
+              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                {historySessions.map((s) => {
+                  const isSelected = activeSessionId === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => onSelectSession(s.id)}
+                      className={`w-full text-left p-2.5 rounded-xl text-xs transition-all border block ${
+                        isSelected
+                          ? "bg-slate-800/90 text-indigo-200 border-indigo-500/40 shadow-sm"
+                          : "bg-slate-900/60 hover:bg-slate-800/50 text-slate-400 hover:text-slate-200 border-slate-800/70"
+                      }`}
+                    >
+                      <p className="font-medium text-slate-200 truncate leading-snug">{s.query}</p>
+                      <div className="flex items-center justify-between gap-1.5 mt-2">
+                        <span className="font-mono text-[9px] text-slate-500">{s.id.slice(0, 10)}</span>
+                        {getStatusBadge(s.status)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* System Health / Footer */}
-      <div className="p-3 border-t border-slate-800 bg-slate-950/40 text-xs">
-        <div className="flex items-center justify-between text-slate-400 mb-1">
-          <span className="font-medium text-slate-300 flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            Backend Status
-          </span>
-          {health?.status === "healthy" || health?.status === "ok" ? (
-            <span className="flex items-center gap-1 text-emerald-400 font-mono text-[10px]">
-              <CheckCircle2 className="w-3 h-3" /> ONLINE
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-amber-400 font-mono text-[10px]">
-              <AlertTriangle className="w-3 h-3" /> CONNECTING
-            </span>
-          )}
-        </div>
-        <div className="text-[10px] text-slate-500 space-y-0.5 font-mono">
-          <p className="truncate">Primary: {health?.services?.llm_primary || health?.primary_llm || "Gemini"}</p>
-          <p className="truncate">Fallback: {health?.services?.llm_fallback || health?.fallback_llm || "Groq"}</p>
-          {(health?.services?.llm_router?.includes("Degraded: True") || health?.degraded_mode) && (
-            <p className="text-amber-400 font-semibold">DEGRADED MODE ACTIVE</p>
-          )}
-        </div>
+      <div className={`border-t border-slate-800/80 bg-slate-950/60 p-3 text-xs ${collapsed ? "text-center" : ""}`}>
+        {!collapsed ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-slate-300">
+              <span className="font-medium flex items-center gap-1.5 text-[11px]">
+                <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                LangGraph Kernel
+              </span>
+              {health?.status === "healthy" || health?.status === "ok" ? (
+                <span className="flex items-center gap-1 text-emerald-400 font-mono text-[10px] font-semibold">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  ONLINE
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-amber-400 font-mono text-[10px]">
+                  <AlertTriangle className="w-3 h-3" />
+                  CONNECTING
+                </span>
+              )}
+            </div>
+
+            <div className="text-[10px] text-slate-500 space-y-0.5 font-mono bg-slate-900/80 p-2 rounded-lg border border-slate-800/80">
+              <div className="flex items-center justify-between">
+                <span>LLM Primary:</span>
+                <span className="text-slate-300">{health?.services?.llm_primary || health?.primary_llm || "Gemini 2.5"}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Fallback:</span>
+                <span className="text-slate-300">{health?.services?.llm_fallback || health?.fallback_llm || "Groq Llama-3"}</span>
+              </div>
+              {(health?.services?.llm_router?.includes("Degraded: True") || health?.degraded_mode) && (
+                <div className="text-amber-400 font-semibold pt-1 text-[9px]">DEGRADED MODE ACTIVE</div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-center" title="System Online">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 ring-4 ring-emerald-500/20" />
+          </div>
+        )}
       </div>
     </aside>
   );

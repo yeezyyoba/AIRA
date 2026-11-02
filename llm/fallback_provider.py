@@ -4,15 +4,17 @@ Integrates with Groq SDK with equivalent error classification for quotas,
 authentication, rate limits, and network issues.
 """
 import json
+import re
 import time
 from typing import Any, Dict, List, Optional, Type
 from pydantic import BaseModel
 import groq
 
 from app.core.config import settings
-from llm.gemini_provider import LLMResponse
+from llm.gemini_provider import LLMResponse, strip_json_fences
 from llm.provider_errors import (
     AuthenticationError,
+    BadRequestError,
     InvalidResponseError,
     ModelNotFoundError,
     ProviderStatus,
@@ -44,7 +46,13 @@ class GroqProvider:
             self._client = client
         elif self.api_key:
             try:
-                self._client = groq.Groq(api_key=self.api_key)
+                # The router owns retries; disable the SDK's own retry loop so a
+                # failing call is not silently repeated up to 9 times.
+                self._client = groq.Groq(
+                    api_key=self.api_key,
+                    timeout=settings.LLM_TIMEOUT_SECONDS,
+                    max_retries=0,
+                )
             except Exception as e:
                 logger.error(f"Failed to initialize Groq client: {e}")
                 self.status = ProviderStatus.AUTHENTICATION_ERROR
@@ -101,6 +109,9 @@ class GroqProvider:
         ):
             self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
             raise ProviderUnavailableError(f"Groq service temporarily unavailable: {error}", provider=self.name)
+
+        if isinstance(error, getattr(groq, "BadRequestError", ())) or re.search(r"\b400\b", err_msg):
+            raise BadRequestError(f"Groq rejected the request: {error}", provider=self.name)
 
         self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
         raise ProviderUnavailableError(f"Groq error: {error}", provider=self.name)
@@ -204,7 +215,7 @@ class GroqProvider:
         raw_text = response.choices[0].message.content
 
         try:
-            validated_obj = schema.model_validate_json(raw_text)
+            validated_obj = schema.model_validate_json(strip_json_fences(raw_text))
         except Exception as e:
             logger.error(f"Failed to validate Groq structured JSON against {schema.__name__}: {e}")
             raise InvalidResponseError(

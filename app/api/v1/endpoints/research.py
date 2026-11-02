@@ -1,5 +1,7 @@
 """Research Sessions and Analysis API Endpoints."""
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
+import uuid
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.schemas.research import (
@@ -12,6 +14,9 @@ from app.schemas.research import (
     ResearchResumeRequest,
 )
 from agents.graph import build_research_graph
+from app.api.v1.endpoints.reports import _REPORTS_STORE, _SESSION_REPORTS
+from app.core.config import settings
+from logging_config.logger import get_logger
 from langgraph.checkpoint.memory import MemorySaver
 from tools.gap_identifier import identify_research_gaps
 from tools.methodology_analyzer import analyze_research_methodology
@@ -26,77 +31,101 @@ from validation.schemas import (
 )
 
 router = APIRouter()
+logger = get_logger("api.research")
 
-# Shared in-memory checkpointer for session state across endpoints
+# Shared in-memory checkpointer for session state across endpoints.
+# Sessions survive across requests but not across process restarts; generated
+# reports are additionally persisted to disk by the report node.
 _api_checkpointer = MemorySaver()
 _shared_graph = build_research_graph(checkpointer=_api_checkpointer)
 
 
-def _register_report_if_present(final_report: Optional[dict], session_id: Optional[str] = None) -> None:
-    """Register generated session report in reports store for archive & export."""
+def _graph_config(session_id: str) -> Dict[str, Any]:
+    # The recursion limit is only a safety net above the explicit max-step
+    # stopping rule enforced inside the graph (reflect_and_revise).
+    return {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": settings.MAX_AGENT_STEPS + 50,
+    }
+
+
+def _register_report_if_present(final_report: Optional[dict], session_id: Optional[str] = None) -> Optional[str]:
+    """Register a generated report in the archive. Returns the report_id or None.
+
+    Reports are validated against the report schema as-is; missing sections are
+    never filled with invented text. A report that does not validate is logged
+    and left out of the archive instead of being silently dropped.
+    """
     if not final_report or not isinstance(final_report, dict):
-        return
+        return None
     try:
-        from datetime import datetime
-        from app.api.v1.endpoints.reports import _REPORTS_STORE
-        rep_id = final_report.get("report_id") or (f"rep_{session_id}" if session_id else None)
-        if not rep_id:
-            return
+        schema = ResearchComparisonReportSchema(**final_report)
+    except Exception as exc:
+        logger.error(
+            "Report from session '%s' failed schema validation and was not archived: %s",
+            session_id, exc,
+        )
+        return None
+    _REPORTS_STORE[schema.report_id] = schema
+    if session_id:
+        _SESSION_REPORTS[session_id] = schema.report_id
+    return schema.report_id
 
-        normalized = dict(final_report)
-        normalized.setdefault("report_id", rep_id)
-        normalized.setdefault("research_question", normalized.get("title") or "Academic Research Investigation")
-        normalized.setdefault("papers_analyzed", [])
-        normalized.setdefault("objectives_and_methodology_comparison", normalized.get("executive_summary") or "Methodology analysis completed.")
-        normalized.setdefault("dataset_comparison", "Benchmarks evaluated across extracted literature.")
-        normalized.setdefault("model_architecture_comparison", "Model architectures evaluated across corpus.")
-        normalized.setdefault("experimental_results_comparison", "Experimental measurements extracted.")
-        normalized.setdefault("strengths_and_limitations", "Evaluated strengths and empirical limitations.")
-        normalized.setdefault("evidence_backed_conclusions", normalized.get("executive_summary") or "Conclusions established.")
-        normalized.setdefault("limitations_of_analysis", "Analysis bounded to retrieved evidence.")
-        normalized.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
 
-        schema = ResearchComparisonReportSchema(**normalized)
-        _REPORTS_STORE[rep_id] = schema
-        if session_id:
-            _REPORTS_STORE[session_id] = schema
-    except Exception:
-        pass
+def _build_response(values: Dict[str, Any], session_id: str, default_status: str, query: Optional[str] = None) -> ResearchResponse:
+    return ResearchResponse(
+        session_id=values.get("session_id") or session_id,
+        status=values.get("stopping_reason") or default_status,
+        research_goal=values.get("research_goal") or query or "",
+        query=values.get("query") or query,
+        clarification_question=values.get("clarification_question"),
+        missing_information=values.get("missing_information"),
+        plan=values.get("research_plan"),
+        final_report=values.get("final_report"),
+        observable_logs=values.get("observable_logs", []),
+        discovered_papers=values.get("discovered_papers", []),
+        validated_papers=values.get("validated_papers", []),
+        extracted_papers=values.get("extracted_papers", []),
+        metric_comparisons=values.get("metric_comparisons", []),
+        identified_gaps=values.get("identified_gaps", []),
+        citations=values.get("citations", {}),
+        is_degraded=bool(values.get("is_degraded", False)),
+        retrieved_evidence=values.get("retrieved_evidence", []),
+        phase_statuses=values.get("phase_statuses", {}),
+        step_count=values.get("step_count"),
+        max_steps=values.get("max_steps"),
+    )
+
+
+async def _run_graph(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    try:
+        return await _shared_graph.ainvoke(payload, config=_graph_config(session_id))
+    except Exception as exc:
+        logger.exception("Research workflow for session '%s' crashed.", session_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Research workflow failed unexpectedly ({type(exc).__name__}). See server logs for session '{session_id}'.",
+        ) from exc
 
 
 @router.post("/sessions", response_model=ResearchResponse, tags=["Research"])
 async def start_research_session(request: ResearchRequest) -> ResearchResponse:
     """Initiate an agentic research session with AIRA LangGraph workflow."""
-    import uuid
+    if request.year_from and request.year_to and request.year_from > request.year_to:
+        raise HTTPException(status_code=422, detail="year_from must not be after year_to.")
     session_id = f"session_{uuid.uuid4().hex[:8]}"
     initial_state = {
         "session_id": session_id,
         "query": request.query,
         "research_goal": request.query,
+        "max_results": request.max_results,
+        "year_from": request.year_from,
+        "year_to": request.year_to,
+        "max_steps": settings.MAX_AGENT_STEPS,
     }
-    final_state = await _shared_graph.ainvoke(
-        initial_state,
-        config={"configurable": {"thread_id": session_id}},
-    )
+    final_state = await _run_graph(initial_state, session_id)
     _register_report_if_present(final_state.get("final_report"), session_id=session_id)
-    return ResearchResponse(
-        session_id=final_state.get("session_id", session_id),
-        status=final_state.get("stopping_reason", "COMPLETED"),
-        research_goal=final_state.get("research_goal", request.query),
-        query=request.query,
-        clarification_question=final_state.get("clarification_question"),
-        missing_information=final_state.get("missing_information"),
-        plan=final_state.get("research_plan"),
-        final_report=final_state.get("final_report"),
-        observable_logs=final_state.get("observable_logs", []),
-        discovered_papers=final_state.get("discovered_papers", []),
-        validated_papers=final_state.get("validated_papers", []),
-        extracted_papers=final_state.get("extracted_papers", []),
-        metric_comparisons=final_state.get("metric_comparisons", []),
-        identified_gaps=final_state.get("identified_gaps", []),
-        citations=final_state.get("citations", {}),
-        is_degraded=final_state.get("is_degraded", False),
-    )
+    return _build_response(final_state, session_id, "COMPLETED", query=request.query)
 
 
 @router.get("/sessions/{session_id}", response_model=ResearchResponse, tags=["Research"])
@@ -105,27 +134,7 @@ async def get_research_session(session_id: str) -> ResearchResponse:
     state_snapshot = await _shared_graph.aget_state({"configurable": {"thread_id": session_id}})
     if not state_snapshot or not state_snapshot.values:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Research session '{session_id}' not found.")
-    
-    vals = state_snapshot.values
-    _register_report_if_present(vals.get("final_report"), session_id=session_id)
-    return ResearchResponse(
-        session_id=vals.get("session_id", session_id),
-        status=vals.get("stopping_reason", "IN_PROGRESS"),
-        research_goal=vals.get("research_goal", ""),
-        query=vals.get("query"),
-        clarification_question=vals.get("clarification_question"),
-        missing_information=vals.get("missing_information"),
-        plan=vals.get("research_plan"),
-        final_report=vals.get("final_report"),
-        observable_logs=vals.get("observable_logs", []),
-        discovered_papers=vals.get("discovered_papers", []),
-        validated_papers=vals.get("validated_papers", []),
-        extracted_papers=vals.get("extracted_papers", []),
-        metric_comparisons=vals.get("metric_comparisons", []),
-        identified_gaps=vals.get("identified_gaps", []),
-        citations=vals.get("citations", {}),
-        is_degraded=vals.get("is_degraded", False),
-    )
+    return _build_response(state_snapshot.values, session_id, "IN_PROGRESS")
 
 
 @router.post("/sessions/{session_id}/resume", response_model=ResearchResponse, tags=["Research"])
@@ -134,44 +143,24 @@ async def resume_research_session(session_id: str, request: ResearchResumeReques
     state_snapshot = await _shared_graph.aget_state({"configurable": {"thread_id": session_id}})
     if not state_snapshot or not state_snapshot.values:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Research session '{session_id}' not found.")
-    
+
     current_values = state_snapshot.values
     if current_values.get("stopping_reason") != "USER_CLARIFICATION_REQUIRED":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Session '{session_id}' is not awaiting clarification (current status: {current_values.get('stopping_reason')}).",
         )
-    
+
     resume_input = {
-        "clarification_response": request.clarification_response,
+        "clarification_response": request.clarification_response.strip(),
         "missing_information": [],
         "clarification_question": None,
         "stopping_reason": None,
+        "max_steps": settings.MAX_AGENT_STEPS,
     }
-    
-    final_state = await _shared_graph.ainvoke(
-        resume_input,
-        config={"configurable": {"thread_id": session_id}},
-    )
+    final_state = await _run_graph(resume_input, session_id)
     _register_report_if_present(final_state.get("final_report"), session_id=session_id)
-    return ResearchResponse(
-        session_id=final_state.get("session_id", session_id),
-        status=final_state.get("stopping_reason", "COMPLETED"),
-        research_goal=final_state.get("research_goal", ""),
-        query=final_state.get("query"),
-        clarification_question=final_state.get("clarification_question"),
-        missing_information=final_state.get("missing_information"),
-        plan=final_state.get("research_plan"),
-        final_report=final_state.get("final_report"),
-        observable_logs=final_state.get("observable_logs", []),
-        discovered_papers=final_state.get("discovered_papers", []),
-        validated_papers=final_state.get("validated_papers", []),
-        extracted_papers=final_state.get("extracted_papers", []),
-        metric_comparisons=final_state.get("metric_comparisons", []),
-        identified_gaps=final_state.get("identified_gaps", []),
-        citations=final_state.get("citations", {}),
-        is_degraded=final_state.get("is_degraded", False),
-    )
+    return _build_response(final_state, session_id, "COMPLETED")
 
 
 @router.post("/compare", response_model=PaperComparisonSchema, tags=["Research"])

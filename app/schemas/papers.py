@@ -1,6 +1,6 @@
 """Schemas for Papers API Endpoints."""
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from validation.schemas import (
     FieldComparisonSchema,
@@ -53,9 +53,19 @@ class PaperValidationResponse(BaseModel):
 
 class PaperReadRequest(BaseModel):
     """Request payload for reading a paper from a remote URL."""
-    url: str = Field(..., description="Publicly accessible HTTP/HTTPS URL of the academic PDF")
-    paper_id: Optional[str] = Field(None, description="Optional paper identifier")
+    url: str = Field(..., max_length=2048, description="Publicly accessible HTTP/HTTPS URL of the academic PDF")
+    paper_id: Optional[str] = Field(None, max_length=200, description="Optional paper identifier")
     extraction_method: str = Field(default="auto", description="Extraction method: 'auto', 'pymupdf', or 'pdfplumber'")
+
+    @field_validator("url")
+    @classmethod
+    def _require_http_url(cls, value: str) -> str:
+        # The reader treats non-URL strings as local file paths; an API client
+        # must never be able to make the server read its own filesystem.
+        cleaned = value.strip()
+        if not cleaned.lower().startswith(("http://", "https://")):
+            raise ValueError("url must be an http:// or https:// URL")
+        return cleaned
 
 
 class PaperExtractionResponse(BaseModel):

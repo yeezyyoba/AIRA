@@ -54,3 +54,12 @@ class DegradedModeError(LLMProviderError):
 class ModelNotFoundError(LLMProviderError):
     """Raised when the configured model does not exist or is unavailable for the API credentials."""
     pass
+
+
+class BadRequestError(LLMProviderError):
+    """Raised when the provider rejects the request itself (HTTP 400 / INVALID_ARGUMENT).
+
+    Not retried against the same provider (the identical request would fail
+    again), but the fallback provider may still accept it.
+    """
+    pass

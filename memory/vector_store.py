@@ -201,8 +201,8 @@ class ChromaVectorStore:
             # Rollback: Clean up any partial additions and restore old snapshot
             try:
                 self.delete_paper(paper_id)
-            except Exception:
-                pass
+            except Exception as cleanup_err:
+                logger.error(f"Rollback cleanup for paper '{paper_id}' failed: {cleanup_err}")
 
             if has_existing:
                 try:

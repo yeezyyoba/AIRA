@@ -12,6 +12,7 @@ from typing import Any, List, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse
 import httpcore
 import httpx
+from httpcore._backends.anyio import AnyIOBackend
 
 from app.core.config import settings
 from logging_config.logger import get_logger
@@ -124,6 +125,7 @@ def validate_download_url(url: str) -> None:
 
 
 class SafeNetworkBackend(httpcore.AsyncNetworkBackend):
+    _backend = AnyIOBackend()
     """Network backend that resolves and verifies IPs before establishing TCP connection.
 
     Pins the outbound TCP socket directly to the validated IP to prevent DNS rebinding
@@ -163,7 +165,7 @@ class SafeNetworkBackend(httpcore.AsyncNetworkBackend):
 
         # Pin the TCP connection directly to the first validated IP address
         target_ip = validated_ips[0]
-        return await super().connect_tcp(
+        return await self._backend.connect_tcp(
             target_ip,
             port,
             timeout=timeout,

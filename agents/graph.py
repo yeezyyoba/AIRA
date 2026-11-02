@@ -1,8 +1,5 @@
-"""AIRA LangGraph Stateful Graph Definition.
+"""AIRA LangGraph Stateful Graph Definition."""
 
-Constructs and compiles the StateGraph workflow with conditional routing,
-bounded retries, dynamic loops, and SQLite / Memory checkpointing.
-"""
 from typing import Any, Dict, Optional
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -26,77 +23,94 @@ from agents.nodes import (
     validate_tool_outputs,
 )
 from agents.state import ResearchState
+from app.core.config import settings
 from llm.model_router import ModelRouter
 from memory.vector_store import ChromaVectorStore
 from services.paper_repository import PaperRepository
 
 
-# ---------------------------------------------------------------------------
-# Conditional Routing Functions
-# ---------------------------------------------------------------------------
+def _plan_tasks(state: ResearchState):
+    """Normalise plan entries; tolerate legacy string task ids."""
+    tasks = []
+    for task in state.get("research_plan", []) or []:
+        if isinstance(task, dict):
+            tasks.append(task)
+        elif task is not None:
+            tasks.append({"task_id": str(task), "status": "PENDING"})
+    return tasks
+
+
+def _step_budget_exhausted(state: ResearchState) -> bool:
+    return state.get("step_count", 0) >= state.get("max_steps", settings.MAX_AGENT_STEPS)
+
 
 def route_after_check_information(state: ResearchState) -> str:
-    """Route to ask_user if information is missing; otherwise proceed to planning."""
+    if state.get("stopping_reason") == "UNACCEPTABLE_RISK" or state.get("risk_flags"):
+        return "finish_task"
     if state.get("missing_information"):
         return "ask_user"
     return "create_plan"
 
 
 def route_after_select_tools(state: ResearchState) -> str:
-    """Route to tool execution if a tool is selected; otherwise reflect on plan."""
     if state.get("selected_tool"):
         return "execute_tools"
     return "reflect_and_revise"
 
 
 def route_after_validation(state: ResearchState) -> str:
-    """Route based on tool validation status: retry on failure, store evidence on success."""
     status = state.get("validation_status")
     if status in ("INVALID", "ERROR"):
+        return "retry_handler"
+    # An initial search that finds nothing is retried with a reformulated
+    # query; an empty *expanded* search simply adds no new candidates.
+    if (
+        status == "EMPTY"
+        and state.get("selected_tool") == "search_academic_papers"
+        and not state.get("discovered_papers")
+    ):
         return "retry_handler"
     return "store_evidence"
 
 
 def route_after_retry(state: ResearchState) -> str:
-    """Route after retry decision: re-execute if retry requested, otherwise adapt plan."""
     if state.get("validation_status") == "RETRY_REQUESTED":
         return "execute_tools"
     return "reflect_and_revise"
 
 
 def route_after_reflection(state: ResearchState) -> str:
-    """Route after reflection: loop back for more evidence, or proceed to critique."""
-    step = state.get("step_count", 0)
-    max_steps = state.get("max_steps", 15)
-
-    if step >= max_steps:
+    if state.get("stopping_reason") or _step_budget_exhausted(state):
         return "critique_findings"
 
+    if state.get("final_report"):
+        return "critique_findings"
+
+    plan = _plan_tasks(state)
     completed = set(state.get("completed_tasks", []))
-    plan = state.get("research_plan", [])
-
-    # If all tasks in plan are completed or report already generated
-    if state.get("final_report") or (plan and len(completed) >= len(plan)):
+    if plan and all(task.get("task_id") in completed for task in plan):
         return "critique_findings"
 
-    # If tools are still needed to satisfy tasks
     return "select_tools"
 
 
 def route_after_critique(state: ResearchState) -> str:
-    """Route after critique: revise plan if needed and steps remain; otherwise generate report."""
-    status = state.get("critique_status")
-    step = state.get("step_count", 0)
-    max_steps = state.get("max_steps", 15)
+    """Loop back only when a genuinely unresolved phase remains and budget allows."""
+    if state.get("stopping_reason") or _step_budget_exhausted(state):
+        return "generate_report"
 
-    if status == "NEEDS_REVISION" and step < max_steps:
+    completed = set(state.get("completed_tasks", []))
+    unresolved = any(
+        task.get("task_id") not in completed
+        and task.get("status", "PENDING") in ("PENDING", "IN_PROGRESS")
+        for task in _plan_tasks(state)
+    )
+
+    if state.get("critique_status") == "NEEDS_REVISION" and unresolved:
         return "select_tools"
+
     return "generate_report"
 
-
-# ---------------------------------------------------------------------------
-# Graph Builder
-# ---------------------------------------------------------------------------
 
 def build_research_graph(
     checkpointer: Optional[BaseCheckpointSaver] = None,
@@ -104,20 +118,10 @@ def build_research_graph(
     repository: Optional[PaperRepository] = None,
     vector_db: Optional[ChromaVectorStore] = None,
 ) -> Any:
-    """Build and compile the AIRA Research StateGraph workflow.
+    """Build and compile the AIRA research workflow."""
 
-    Args:
-        checkpointer: Checkpoint saver for state persistence (MemorySaver or SqliteSaver).
-        router: ModelRouter instance for LLM reasoning and degraded mode.
-        repository: PaperRepository instance for paper storage.
-        vector_db: ChromaVectorStore instance for RAG retrieval.
-
-    Returns:
-        Compiled LangGraph Pregel executable workflow.
-    """
     workflow = StateGraph(ResearchState)
 
-    # 1. Register Nodes
     workflow.add_node("receive_request", receive_request)
     workflow.add_node("analyze_goal", analyze_goal)
     workflow.add_node("check_information", check_information)
@@ -125,12 +129,25 @@ def build_research_graph(
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("select_tools", select_tools)
 
-    # Wrap async execution nodes with injected dependencies
-    async def bound_execute_tools(state: ResearchState) -> Dict[str, Any]:
-        return await execute_tools(state, router=router, repository=repository, vector_db=vector_db)
+    async def bound_execute_tools(
+        state: ResearchState,
+    ) -> Dict[str, Any]:
+        return await execute_tools(
+            state,
+            router=router,
+            repository=repository,
+            vector_db=vector_db,
+        )
 
-    async def bound_generate_report(state: ResearchState) -> Dict[str, Any]:
-        return await generate_report_node(state, router=router, repository=repository, vector_db=vector_db)
+    async def bound_generate_report(
+        state: ResearchState,
+    ) -> Dict[str, Any]:
+        return await generate_report_node(
+            state,
+            router=router,
+            repository=repository,
+            vector_db=vector_db,
+        )
 
     workflow.add_node("execute_tools", bound_execute_tools)
     workflow.add_node("validate_tool_outputs", validate_tool_outputs)
@@ -141,28 +158,23 @@ def build_research_graph(
     workflow.add_node("generate_report", bound_generate_report)
     workflow.add_node("finish_task", finish_task)
 
-    # 2. Register Edges
     workflow.add_edge(START, "receive_request")
     workflow.add_edge("receive_request", "analyze_goal")
     workflow.add_edge("analyze_goal", "check_information")
 
-    # Branch after check_information
     workflow.add_conditional_edges(
         "check_information",
         route_after_check_information,
         {
             "ask_user": "ask_user",
             "create_plan": "create_plan",
+            "finish_task": "finish_task",
         },
     )
 
-    # User clarification pauses workflow
     workflow.add_edge("ask_user", "finish_task")
-
-    # Planning flow
     workflow.add_edge("create_plan", "select_tools")
 
-    # Branch after select_tools
     workflow.add_conditional_edges(
         "select_tools",
         route_after_select_tools,
@@ -172,10 +184,8 @@ def build_research_graph(
         },
     )
 
-    # Tool execution to validation
     workflow.add_edge("execute_tools", "validate_tool_outputs")
 
-    # Branch after validation
     workflow.add_conditional_edges(
         "validate_tool_outputs",
         route_after_validation,
@@ -185,7 +195,6 @@ def build_research_graph(
         },
     )
 
-    # Branch after retry_handler
     workflow.add_conditional_edges(
         "retry_handler",
         route_after_retry,
@@ -195,10 +204,8 @@ def build_research_graph(
         },
     )
 
-    # Evidence stored leads to reflection
     workflow.add_edge("store_evidence", "reflect_and_revise")
 
-    # Branch after reflection
     workflow.add_conditional_edges(
         "reflect_and_revise",
         route_after_reflection,
@@ -208,7 +215,6 @@ def build_research_graph(
         },
     )
 
-    # Branch after critique
     workflow.add_conditional_edges(
         "critique_findings",
         route_after_critique,
@@ -218,11 +224,8 @@ def build_research_graph(
         },
     )
 
-    # Finalization
     workflow.add_edge("generate_report", "finish_task")
     workflow.add_edge("finish_task", END)
 
-    # 3. Compile Graph with Checkpointing
     saver = checkpointer if checkpointer is not None else MemorySaver()
-    compiled_app = workflow.compile(checkpointer=saver)
-    return compiled_app
+    return workflow.compile(checkpointer=saver)

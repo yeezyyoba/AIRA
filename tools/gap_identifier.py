@@ -184,11 +184,24 @@ async def identify_research_gaps(
 
     # 3. Potential Research Directions (from Common Empirical Limitations)
     common_limitations = []
+    matched_themes: Dict[str, List[str]] = {}
     direction_evidence: List[EvidenceItemSchema] = []
+    theme_keywords = {
+        "noise": "noise robustness",
+        "compute": "compute cost",
+        "scale": "scalability",
+        "latency": "latency",
+        "domain": "domain transfer",
+        "robust": "robustness",
+        "generaliz": "generalization",
+        "low-resource": "low-resource data scarcity",
+    }
     for pid, paper in loaded_papers.items():
         data = paper.extracted_data
         if data and data.limitations:
-            if any(w in data.limitations.lower() for w in ("noise", "compute", "scale", "latency", "domain", "robust", "generaliz", "low-resource")):
+            themes = [label for kw, label in theme_keywords.items() if kw in data.limitations.lower()]
+            if themes:
+                matched_themes[pid] = themes
                 common_limitations.append(pid)
                 ev_lim = next((e for e in (data.evidence or []) if e.section_heading and "limitation" in e.section_heading.lower()), None)
                 if ev_lim:
@@ -208,16 +221,19 @@ async def identify_research_gaps(
         gaps.append(
             ResearchGapSchema(
                 gap_id=f"gap_{gap_counter:03d}",
-                title=f"Robustness and Generalization Under Real-World Deployment Constraints in {research_area}",
+                title=f"Shared Reported Limitations Across Studies in {research_area}",
                 description=(
-                    f"Multiple studies ({', '.join(common_limitations)}) identify operational constraints including environmental noise, "
-                    "domain transfer degradation, or high compute requirements during evaluation. Developing lightweight or robust adaptation mechanisms "
-                    "represents an evidence-supported potential research direction."
+                    "Multiple studies report related limitations in their own words: "
+                    + "; ".join(f"{pid} ({', '.join(themes)})" for pid, themes in matched_themes.items())
+                    + ". Addressing these shared constraints is a potential research direction supported by the cited passages."
                 ),
                 gap_type=GapType.POTENTIAL_RESEARCH_DIRECTION,
                 supporting_papers=list(set(e.paper_id for e in direction_evidence)),
                 evidence=direction_evidence,
-                suggested_direction="Investigate noise-robust architectures, domain adaptation techniques, and lightweight compression for deployment.",
+                suggested_direction=(
+                    "Investigate methods targeting the shared limitation themes: "
+                    + ", ".join(sorted({t for themes in matched_themes.values() for t in themes})) + "."
+                ),
             )
         )
         gap_counter += 1

@@ -41,8 +41,17 @@ class Settings(BaseSettings):
     REPORTS_DIRECTORY: str = "./data/reports"
 
     # Agent & Search Limits
-    MAX_AGENT_STEPS: int = 20
+    # MAX_AGENT_STEPS counts LangGraph node executions (one tool cycle is ~5
+    # nodes), so a complete multi-paper workflow needs on the order of 100.
+    MAX_AGENT_STEPS: int = 150
     MAX_RETRIES: int = 2
+    MAX_PAPERS_TO_EXTRACT: int = 5
+    MAX_PLAN_REVISIONS: int = 1
+    METADATA_VALIDATION_CONCURRENCY: int = 5
+
+    # LLM request limits
+    LLM_TIMEOUT_SECONDS: float = 60.0
+    LLM_DEGRADED_COOLDOWN_SECONDS: float = 120.0
     MAX_SEARCH_RESULTS: int = 20
     REQUEST_TIMEOUT_SECONDS: int = 30
     ACADEMIC_MAX_RETRIES: int = 2

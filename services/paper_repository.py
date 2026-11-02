@@ -18,11 +18,24 @@ logger = get_logger("paper_repository")
 
 
 def _sanitize_paper_id(paper_id: str) -> str:
-    """Sanitize paper identifier to prevent directory traversal attacks."""
+    """Map a paper identifier to a safe, collision-resistant file stem.
+
+    Every character outside ``[A-Za-z0-9_.-]`` (including ``/`` and ``\\``)
+    becomes ``_``, so the result is always a single path component and the
+    full identifier is preserved. (Taking only ``Path(id).name`` made DOIs
+    such as ``10.1/abc`` and ``10.2/abc`` collide on ``abc.json``.)
+    """
     if not paper_id or not isinstance(paper_id, str):
         raise ValueError("paper_id must be a non-empty string")
 
-    # Take filename component only and replace path separators and special characters
+    clean = re.sub(r"[^\w\.\-]", "_", paper_id.strip(), flags=re.ASCII)
+    if not clean or clean.startswith(".") or set(clean) <= {".", "_"}:
+        clean = f"paper_{clean.lstrip('.')}"
+    return clean[:200]
+
+
+def _legacy_sanitize_paper_id(paper_id: str) -> str:
+    """Pre-fix file naming, used only to read files saved by older versions."""
     clean = Path(paper_id).name
     clean = re.sub(r"[^\w\.\-]", "_", clean)
     if not clean or clean.startswith("."):
@@ -69,7 +82,11 @@ class PaperRepository:
 
         file_path = self._get_file_path(clean_id)
         if not file_path.exists():
-            return None
+            legacy = self.storage_dir / f"{_legacy_sanitize_paper_id(paper_id)}.json"
+            if legacy != file_path and legacy.exists():
+                file_path = legacy
+            else:
+                return None
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:

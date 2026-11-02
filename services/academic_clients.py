@@ -324,6 +324,8 @@ class OpenAlexClient(BaseAcademicClient):
         open_access = item.get("open_access") or {}
         is_oa = open_access.get("is_oa")
         oa_url = open_access.get("oa_url")
+        best_oa_location = item.get("best_oa_location") or {}
+        pdf_url = best_oa_location.get("pdf_url")
         citations = item.get("cited_by_count")
 
         paper_id = clean_doi or item.get("id") or f"openalex_{item.get('id', '').split('/')[-1]}"
@@ -338,6 +340,7 @@ class OpenAlexClient(BaseAcademicClient):
             "abstract": abstract,
             "is_open_access": is_oa,
             "open_access_url": oa_url,
+            "pdf_url": pdf_url,
         }
 
         return PaperMetadataSchema(
@@ -597,6 +600,17 @@ class CrossrefClient(BaseAcademicClient):
         venue = venues[0].strip() if venues and venues[0] else None
 
         url = item.get("URL") or (f"https://doi.org/{clean_doi}" if clean_doi else None)
+        pdf_url = next(
+            (
+                link.get("URL")
+                for link in item.get("link", [])
+                if isinstance(link, dict)
+                and "pdf" in str(link.get("content-type", "")).lower()
+                and isinstance(link.get("URL"), str)
+                and link["URL"].startswith(("https://", "http://"))
+            ),
+            None,
+        )
         citations = item.get("is-referenced-by-count")
 
         paper_id = clean_doi or url or f"crossref_{title[:30]}"
@@ -611,6 +625,7 @@ class CrossrefClient(BaseAcademicClient):
             "abstract": abstract,
             "is_open_access": None,
             "open_access_url": None,
+            "pdf_url": pdf_url,
         }
 
         return PaperMetadataSchema(

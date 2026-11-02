@@ -5,7 +5,7 @@ detects failures, handles bounded retries for transient errors, switches to Groq
 on quota exhaustion or outages, and manages graceful Degraded Mode.
 """
 import time
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Optional, Type
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -13,9 +13,9 @@ from llm.gemini_provider import GeminiProvider, LLMResponse
 from llm.fallback_provider import GroqProvider
 from llm.provider_errors import (
     AuthenticationError,
+    BadRequestError,
     DegradedModeError,
     InvalidResponseError,
-    LLMProviderError,
     ModelNotFoundError,
     ProviderStatus,
     ProviderUnavailableError,
@@ -44,9 +44,24 @@ class ModelRouter:
         self.initial_backoff_seconds = initial_backoff_seconds
         self.active_provider_name: str = "gemini"
         self.degraded_mode: bool = False
+        # Monotonic timestamps of when degraded mode / primary quota exhaustion
+        # began. None means "set externally": stay in that state until reset.
+        self._degraded_since: Optional[float] = None
+        self._primary_quota_since: Optional[float] = None
+        self.cooldown_seconds: float = float(settings.LLM_DEGRADED_COOLDOWN_SECONDS)
+
+    def _cooldown_elapsed(self, since: Optional[float]) -> bool:
+        return since is not None and (time.monotonic() - since) >= self.cooldown_seconds
 
     def is_degraded_mode(self) -> bool:
-        """Return True if all LLM providers are currently exhausted or unavailable."""
+        """Return True if all LLM providers are currently exhausted or unavailable.
+
+        Degraded mode entered by the router expires after a cooldown so a
+        transient outage does not disable reasoning until the process restarts.
+        """
+        if self.degraded_mode and self._cooldown_elapsed(self._degraded_since):
+            logger.info("Degraded-mode cooldown elapsed; probing LLM providers again.")
+            self.reset_status()
         return self.degraded_mode
 
     def get_active_provider_name(self) -> str:
@@ -59,6 +74,8 @@ class ModelRouter:
         self.fallback.status = ProviderStatus.AVAILABLE
         self.active_provider_name = "gemini"
         self.degraded_mode = False
+        self._degraded_since = None
+        self._primary_quota_since = None
         logger.info("ModelRouter status reset: providers set to AVAILABLE.")
 
     def _execute_with_retry(
@@ -132,6 +149,18 @@ class ModelRouter:
                 logger.error(f"Configured model unavailable for {provider.name}: {model_err}. Skipping retries.")
                 raise model_err
 
+            except BadRequestError as bad_request:
+                # The identical request would be rejected again: do not retry.
+                usage_tracker.record_call(
+                    provider=provider.name,
+                    model=provider.model,
+                    latency=0.0,
+                    success=False,
+                )
+                usage_tracker.record_error(provider.name, "BadRequestError")
+                logger.error(f"{provider.name} rejected the request: {bad_request}. Not retrying.")
+                raise bad_request
+
             except (RateLimitError, ProviderUnavailableError, InvalidResponseError) as transient_err:
                 last_exception = transient_err
                 usage_tracker.record_error(provider.name, type(transient_err).__name__)
@@ -172,8 +201,8 @@ class ModelRouter:
         **kwargs: Any,
     ) -> LLMResponse:
         """Central routing loop: Try Gemini -> On eligible failure switch to Groq -> On failure enter Degraded Mode."""
-        # Check if already in degraded mode
-        if self.degraded_mode:
+        # Check if already in degraded mode (expires after the cooldown)
+        if self.is_degraded_mode():
             logger.error("LLM reasoning requested while ModelRouter is in DEGRADED MODE.")
             raise DegradedModeError(
                 "All configured LLM providers (Gemini and Groq) are currently unavailable. "
@@ -184,12 +213,19 @@ class ModelRouter:
             )
 
         # 1. Attempt Primary Provider (Gemini) if not already marked unavailable
+        if self.gemini.status == ProviderStatus.QUOTA_EXHAUSTED and self._cooldown_elapsed(self._primary_quota_since):
+            logger.info("Primary quota cooldown elapsed; retrying the primary provider.")
+            self.gemini.status = ProviderStatus.AVAILABLE
+            self._primary_quota_since = None
         if self.gemini.status != ProviderStatus.QUOTA_EXHAUSTED:
             try:
                 logger.info(f"Routing request to primary LLM: {self.gemini.name} ({self.gemini.model})")
                 self.active_provider_name = self.gemini.name
                 return self._execute_with_retry(self.gemini, method_name, *args, **kwargs)
-            except (QuotaExceededError, RateLimitError, ProviderUnavailableError, InvalidResponseError, ModelNotFoundError) as gemini_err:
+            except (QuotaExceededError, RateLimitError, ProviderUnavailableError, InvalidResponseError,
+                    ModelNotFoundError, BadRequestError) as gemini_err:
+                if isinstance(gemini_err, QuotaExceededError):
+                    self._primary_quota_since = time.monotonic()
                 logger.warning(
                     f"Primary provider {self.gemini.name} failed: {gemini_err}. "
                     f"Initiating fallback to {self.fallback.name}."
@@ -209,6 +245,18 @@ class ModelRouter:
                     to_provider=self.fallback.name,
                     reason=f"Auth error: {auth_err}",
                 )
+            except Exception as unexpected_err:
+                # Any other primary failure (SDK bug, malformed object) still
+                # deserves a fallback attempt rather than crashing the caller.
+                logger.error(
+                    f"Primary provider {self.gemini.name} raised unexpected "
+                    f"{type(unexpected_err).__name__}: {unexpected_err}. Falling back."
+                )
+                usage_tracker.record_fallback(
+                    from_provider=self.gemini.name,
+                    to_provider=self.fallback.name,
+                    reason=f"Unexpected error: {unexpected_err}",
+                )
 
         # 2. Attempt Fallback Provider (Groq)
         try:
@@ -221,6 +269,7 @@ class ModelRouter:
                 "Entering DEGRADED MODE."
             )
             self.degraded_mode = True
+            self._degraded_since = time.monotonic()
             usage_tracker.record_error("router", "DegradedModeActivated")
             raise DegradedModeError(
                 f"Both Gemini and {self.fallback.name} failed. "

@@ -1,6 +1,6 @@
 # AIRA Phase 9: Comprehensive System Evaluation and Reliability Report
 
-**Report generated:** 2026-11-01 15:03:41 UTC
+**Report generated:** 2026-11-02 12:19:12 UTC
 **Evaluation mode:** Offline deterministic and mocked evaluation. These results are not a substitute for live-provider or real-world validation.
 **Language scope:** English and Amharic benchmark cases.
 **RAG embedding provider:** MockEmbeddingProvider (synthetic embeddings; retrieval plumbing verification only)
