@@ -543,3 +543,45 @@ async def test_report_references_use_verified_titles_not_pdf_titles(monkeypatch,
 
     titles = {ref["paper_id"]: ref["title"] for ref in final["final_report"]["references"]}
     assert titles == {"p1": "Amharic NLP study p1", "p2": "Amharic NLP study p2"}
+
+
+@pytest.mark.anyio
+async def test_extraction_prefers_papers_relevant_to_the_query(monkeypatch, router, repo, vector_db):
+    """Live run: an Amharic query extracted Nigerian-language papers because candidates followed citation order."""
+    read_order = []
+
+    async def search(*args, **kwargs):
+        return [
+            _paper("hausa", title="Sentiment corpus for Hausa and Igbo tweets"),
+            _paper("yoruba", title="Yoruba sentiment lexicon"),
+            _paper("amh1", title="Amharic sentiment analysis with transformers"),
+            _paper("amh2", title="Transformer models for Amharic AfriSenti"),
+        ]
+
+    async def read(source, paper_id=None, **kwargs):
+        read_order.append(paper_id)
+        return _extraction(paper_id)
+
+    _install(monkeypatch, search=search, read=read)
+    await _run(router, repo, vector_db, {"query": "Amharic sentiment analysis transformers"})
+    assert read_order[:2] == ["amh1", "amh2"]
+
+
+@pytest.mark.anyio
+async def test_report_sections_use_bounded_excerpts(tmp_path):
+    from unittest.mock import MagicMock as _MM
+
+    from services.report_service import generate_research_comparison_report
+
+    long_text = "Methodology sentence about fine-tuning. " * 300
+    repo_ = PaperRepository(storage_dir=str(tmp_path))
+    for pid in ("a", "b"):
+        repo_.save_paper(PaperExtractionResultSchema(
+            paper_id=pid, status=ExtractionStatus.SUCCESS, extraction_method="pymupdf", page_count=3,
+            extracted_data=ExtractedPaperDataSchema(paper_id=pid, title=pid, methodology=long_text, dataset=long_text),
+        ))
+    degraded = _MM()
+    degraded.is_degraded_mode.return_value = True
+    report = await generate_research_comparison_report(["a", "b"], "fine-tuning", repository=repo_, router=degraded)
+    assert len(report.objectives_and_methodology_comparison) < 2500
+    assert "excerpt;" in report.dataset_comparison

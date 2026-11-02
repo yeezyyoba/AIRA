@@ -4,7 +4,7 @@ Scope: the full backend (`agents/`, `app/`, `llm/`, `services/`, `tools/`, `memo
 `validation/`, `evaluation/`, `tests/`). The Next.js frontend was inspected only for
 API compatibility and was not modified.
 
-Verification: `python -m pytest tests` → **252 passed** (246 confirmed on the developer's Mac) on Python 3.11.18 and 3.13
+Verification: `python -m pytest tests` → **254 passed** (252 confirmed on the developer's Mac) on Python 3.11.18 and 3.13
 (baseline before the audit: 199 tests, 6 genuine failures). The backend was started with
 uvicorn and `/health`, `/api/v1/health`, session creation, the risk stop, the
 `/papers/read` guard and `/reports/` were exercised over HTTP.
@@ -54,6 +54,8 @@ The run also exposed four defects, all fixed:
 | 27 | Report references used titles parsed from PDFs (e.g. "Proceedings of the …") instead of registry-verified titles. | References prefer validated metadata (title, authors, year, DOI). |
 | 28 | "Incompatible datasets" reasons embedded pages of raw PDF text in the conclusions. | Dataset names and reasons are truncated and whitespace-normalised. |
 | 29 | Reflection message claimed a phase was unresolved when only one paper had failed. | Message describes item-level failure accurately. |
+| 30 | Second live run ("Amharic sentiment … AfriSenti"): only 1 of 5 extracted papers was about Amharic, because extraction followed the search API's citation order. | Extraction candidates are ranked by query-keyword relevance (title + abstract), then validation confidence. |
+| 31 | The same report was 1,374 lines: whole raw PDF sections were pasted into comparison sections. | Report sections show bounded excerpts (~450 chars); full text stays in the repository/JSON. |
 
 ## 2. Test expectations corrected (with reasons)
 
@@ -65,7 +67,7 @@ The run also exposed four defects, all fixed:
   `GOAL_ACHIEVED`.
 * `test_empty_analysis_result_is_valid`: kept as written; the implementation was fixed.
 
-New tests: `tests/test_reliability.py` (27), `tests/test_prompt_injection.py` (12),
+New tests: `tests/test_reliability.py` (29), `tests/test_prompt_injection.py` (12),
 `tests/test_tools.py` (17), replacing three `assert True` placeholders.
 
 ## 3. Assignment requirements
@@ -89,7 +91,11 @@ New tests: `tests/test_reliability.py` (27), `tests/test_prompt_injection.py` (1
   behaviour is implemented in the graph nodes.
 * The risk filter is pattern-based; it can be bypassed by paraphrase. Retrieved content
   is still always treated as data.
-* Gap identification and metric extraction are heuristic (regex/keyword based).
+* Gap identification, metric extraction and **PDF section detection** are heuristic
+  (regex/keyword based). Section boundaries can be wrong (e.g. a "Methodology"
+  excerpt starting mid-word) and a methods sentence mentioning "limitation" can be
+  reported as an author-acknowledged gap. Improving the section parser
+  (`tools/paper_reader.py`) is the highest-value next quality improvement.
 * `/research/sessions` runs the whole workflow inside the request; long runs need a
   generous client timeout (a background-job API would be better).
 * Backup files (`agents/nodes.py.bak*`, `evaluation/*.backup`) were left untouched.

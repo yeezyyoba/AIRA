@@ -639,6 +639,26 @@ def create_plan(state: ResearchState) -> Dict[str, Any]:
     }
 
 
+def _relevance(record, query_terms) -> int:
+    """How many distinct query keywords appear in a paper's title and abstract."""
+    if not query_terms:
+        return 0
+    meta = _original_metadata(record)
+    text = f"{meta.get('title') or ''} {meta.get('abstract') or ''}".lower()
+    return sum(1 for term in query_terms if term in text)
+
+
+def _query_terms(state) -> List[str]:
+    query = state.get("search_query") or state.get("research_goal") or state.get("query") or ""
+    terms = []
+    for word in _keywords(query, limit=12).lower().split():
+        if len(word) < 3:
+            continue
+        # Light plural folding so "transformers" also matches "Transformer".
+        terms.append(word[:-1] if len(word) > 4 and word.endswith("s") and not word.endswith("ss") else word)
+    return terms
+
+
 def _extraction_candidates(state, validated, extracted, extraction_results, failed) -> List[Tuple[str, str]]:
     attempted = {
         str(item.get("paper_id"))
@@ -646,8 +666,9 @@ def _extraction_candidates(state, validated, extracted, extraction_results, fail
         if isinstance(item, dict) and item.get("paper_id")
     }
     already = set(map(str, extracted))
-    candidates = []
-    for record in _usable_validated(validated):
+    terms = _query_terms(state)
+    ranked = []
+    for position, record in enumerate(_usable_validated(validated)):
         key = _record_key(record)
         url = _pdf_url(record)
         if (
@@ -656,8 +677,10 @@ def _extraction_candidates(state, validated, extracted, extraction_results, fail
             and key not in attempted
             and f"extract:{key}" not in failed
         ):
-            candidates.append((key, url))
-    return candidates
+            # Most query-relevant first; validation confidence breaks ties.
+            ranked.append((-_relevance(record, terms), position, key, url))
+    ranked.sort()
+    return [(key, url) for _, _, key, url in ranked]
 
 
 def _citation_requests(state, validated, extracted, citations, failed) -> List[Dict[str, Any]]:
@@ -759,7 +782,7 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
             choose(
                 "read_research_paper", "extract_and_index",
                 {"paper_id": pid, "file_path_or_url": url},
-                f"Extract and index full text of paper {pid} (highest-confidence remaining candidate).",
+                f"Extract and index full text of paper {pid} (most query-relevant remaining candidate).",
             )
         elif (
             len(extracted) < 2

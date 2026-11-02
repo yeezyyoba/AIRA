@@ -120,7 +120,7 @@ async def generate_research_comparison_report(
         if dim.dimension_name in ("Research Objectives", "Methodology"):
             obj_meth_text += f"### {dim.dimension_name}\n"
             for pid, val in dim.values_by_paper.items():
-                obj_meth_text += f"- **{pid}**: {val or 'Not explicitly documented in paper text'}\n"
+                obj_meth_text += f"- **{pid}**: {_excerpt(val) if val else 'Not explicitly documented in paper text'}\n"
             if dim.differences_noted:
                 diffs = "; ".join(dim.differences_noted)
                 obj_meth_text += f"*Differences*: {diffs}\n\n"
@@ -130,7 +130,7 @@ async def generate_research_comparison_report(
         if dim.dimension_name in ("Datasets", "Dataset Sizes", "Languages Covered"):
             dataset_text += f"#### {dim.dimension_name}\n"
             for pid, val in dim.values_by_paper.items():
-                dataset_text += f"- **{pid}**: {val or 'Not reported'}\n"
+                dataset_text += f"- **{pid}**: {_excerpt(val) if val else 'Not reported'}\n"
             dataset_text += "\n"
 
     arch_text = "### Models & Algorithmic Architectures\n"
@@ -138,7 +138,7 @@ async def generate_research_comparison_report(
         if dim.dimension_name in ("Models and Algorithms", "Experimental Setup"):
             arch_text += f"#### {dim.dimension_name}\n"
             for pid, val in dim.values_by_paper.items():
-                arch_text += f"- **{pid}**: {val or 'Not reported'}\n"
+                arch_text += f"- **{pid}**: {_excerpt(val) if val else 'Not reported'}\n"
             arch_text += "\n"
 
     exp_text = "### Quantitative Results & Metric Comparisons\n"
@@ -184,7 +184,7 @@ async def generate_research_comparison_report(
         if meth.reported_limitations:
             for lim in meth.reported_limitations:
                 page_str = f"Page {lim.page_number}" if lim.page_number is not None else "Page: Unspecified"
-                strengths_text += f"- **Reported Limitation ({page_str})**: {lim.passage}\n"
+                strengths_text += f"- **Reported Limitation ({page_str})**: {_excerpt(lim.passage)}\n"
         else:
             strengths_text += "- No dedicated limitations section delineated in paper text.\n"
         strengths_text += "\n"
@@ -216,6 +216,24 @@ async def generate_research_comparison_report(
         is_degraded=is_degraded,
         created_at=created_at,
     )
+
+
+EXCERPT_CHARS = 450
+
+
+def _excerpt(text: Optional[str], limit: int = EXCERPT_CHARS) -> str:
+    """A readable, single-paragraph excerpt of extracted paper text.
+
+    The report is for reading; the complete extracted sections remain in the
+    paper repository and in the comparison matrix of the JSON export.
+    """
+    if not text:
+        return ""
+    flat = " ".join(str(text).replace("-\n", "").split())
+    if len(flat) <= limit:
+        return flat
+    cut = flat[:limit].rsplit(" ", 1)[0]
+    return f"{cut} … *(excerpt; {len(flat):,} characters extracted)*"
 
 
 def _coerce(value: Any, schema: Any) -> Any:
