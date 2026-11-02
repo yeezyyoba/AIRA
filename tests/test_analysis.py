@@ -1309,3 +1309,28 @@ def test_phase62_missing_compatibility_metadata():
     assert acc_table.compatibility == MetricCompatibility.UNKNOWN
     assert "unverified or unknown" in acc_table.incompatibility_reason.lower() or "ranking suppressed" in acc_table.incompatibility_reason.lower()
     assert len(acc_table.ranked_models) == 0
+
+
+@pytest.mark.parametrize("text", [
+    "The checkpoints6 were based on models trained on 44 languages.",
+    "This yields a lower 5.2 rate of errors.",
+    "The answer 3 is correct.",
+    "We studied cancer 12 patients.",
+])
+def test_metric_names_inside_words_are_not_extracted(text):
+    """Live run: 'checkpoints6 were' was extracted as '6 WER' and reported as a result."""
+    import re
+    from tools.result_analyzer import METRIC_EXTRACTION_PATTERNS
+    assert not any(re.search(p, text, re.IGNORECASE) for p in METRIC_EXTRACTION_PATTERNS)
+
+
+@pytest.mark.parametrize("text", [
+    "Conformer-Large achieved 2.1% WER on test-clean.",
+    "BLEU score of 31.2 on WMT14.",
+    "Accuracy = 88.5% on the test set.",
+    "Our model scored 0.88 Macro-F1.",
+])
+def test_genuine_metric_mentions_are_still_extracted(text):
+    import re
+    from tools.result_analyzer import METRIC_EXTRACTION_PATTERNS
+    assert any(re.search(p, text, re.IGNORECASE) for p in METRIC_EXTRACTION_PATTERNS)

@@ -55,14 +55,17 @@ METRIC_GOALS: Dict[str, MetricGoal] = {
     "perplexity": MetricGoal.LOWER_IS_BETTER,
 }
 
-# Regex patterns for extracting metric scores from academic text
+# Regex patterns for extracting metric scores from academic text.
+# Metric names and values are anchored at word boundaries: without them,
+# "checkpoints6 were" was read as "6 WER", "lower"/"answer" matched "wer",
+# and "cancer" matched "cer".
 METRIC_EXTRACTION_PATTERNS = [
     # E.g.: "BLEU score of 31.2", "Accuracy reached 97.9%", "Macro-F1 of 0.841", "ROUGE-1 of 42.5"
-    r"(?P<variant>macro[- ]?|micro[- ]?|weighted[- ]?|sacre[- ]?|bleu[- ]?4|roc[- ]?|pr[- ]?)?(?P<metric>accuracy|precision|recall|f1(?:-score)?|bleu(?:-[1234])?|sacrebleu|rouge(?:-[12l])?|cer|wer|roc_auc|pr_auc|auc|loss|perplexity)\s*(?:of|is|was|reached|reaches?|achieved|achieves?|scored|scores?|=|:)?\s*(?P<val>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>%|percent)?",
+    r"(?<![A-Za-z])(?P<variant>macro[- ]?|micro[- ]?|weighted[- ]?|sacre[- ]?|bleu[- ]?4|roc[- ]?|pr[- ]?)?(?P<metric>accuracy|precision|recall|f1(?:-score)?|bleu(?:-[1234])?|sacrebleu|rouge(?:-[12l])?|cer|wer|roc_auc|pr_auc|auc|loss|perplexity)(?![A-Za-z])\s*(?:scores?\s+)?(?:of|is|was|reached|reaches?|achieved|achieves?|scored|scores?|=|:)?\s*(?P<val>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>%|percent)?",
     # E.g.: "Conformer-Large achieved 2.1% WER", "Model A scored 0.88 Macro-F1", "42.5 ROUGE-1"
-    r"(?P<val>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>%|percent)?\s*(?P<variant>macro[- ]?|micro[- ]?|weighted[- ]?|sacre[- ]?|bleu[- ]?4|roc[- ]?|pr[- ]?)?(?P<metric>accuracy|precision|recall|f1(?:-score)?|bleu(?:-[1234])?|sacrebleu|rouge(?:-[12l])?|cer|wer|roc_auc|pr_auc|auc|loss|perplexity)",
+    r"(?<![A-Za-z0-9.])(?P<val>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>%|percent)?\s*(?P<variant>macro[- ]?|micro[- ]?|weighted[- ]?|sacre[- ]?|bleu[- ]?4|roc[- ]?|pr[- ]?)?(?P<metric>accuracy|precision|recall|f1(?:-score)?|bleu(?:-[1234])?|sacrebleu|rouge(?:-[12l])?|cer|wer|roc_auc|pr_auc|auc|loss|perplexity)(?![A-Za-z])",
     # E.g.: "BLEU: 31.2", "Accuracy = 88.5%", "ROUGE-1: 42.5"
-    r"(?P<metric>accuracy|precision|recall|f1|bleu(?:-[1234])?|sacrebleu|rouge(?:-[12l])?|cer|wer|roc_auc|pr_auc|auc|loss|perplexity)\s*[:=]\s*(?P<val>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>%)?",
+    r"(?<![A-Za-z])(?P<metric>accuracy|precision|recall|f1|bleu(?:-[1234])?|sacrebleu|rouge(?:-[12l])?|cer|wer|roc_auc|pr_auc|auc|loss|perplexity)(?![A-Za-z])\s*[:=]\s*(?P<val>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>%)?",
 ]
 
 

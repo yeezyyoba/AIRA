@@ -56,6 +56,7 @@ The run also exposed four defects, all fixed:
 | 29 | Reflection message claimed a phase was unresolved when only one paper had failed. | Message describes item-level failure accurately. |
 | 30 | Second live run ("Amharic sentiment … AfriSenti"): only 1 of 5 extracted papers was about Amharic, because extraction followed the search API's citation order. | Extraction candidates are ranked by query-keyword relevance (title + abstract), then validation confidence. |
 | 31 | The same report was 1,374 lines: whole raw PDF sections were pasted into comparison sections. | Report sections show bounded excerpts (~450 chars); full text stays in the repository/JSON. |
+| 32 | Third live run (98 steps, real Gemini embeddings): the conclusions claimed a "best WER of 6.0" for a sentiment paper. The metric regexes had no word boundaries, so "checkpoints⁶ were" was read as "6 WER" (also "lower", "answer", "cancer"). | Metric names and values are anchored at word boundaries; "BLEU score of X" phrasing is now supported. Verified on the cached papers from that run. |
 
 ## 2. Test expectations corrected (with reasons)
 
