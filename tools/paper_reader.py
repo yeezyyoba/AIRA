@@ -219,16 +219,38 @@ TARGET_SECTION_KEYS = (
 )
 
 
+# Running headers/footers printed above the title on page 1 (venue, pages, copyright, DOI).
+_RUNNING_HEADER = re.compile(r"^\s*proceedings\s+of\b|\bpages\b|©|\bdoi\s*:", re.IGNORECASE)
+# "Workshop" alone may appear in a real title; only a venue line pairs it with these.
+_WORKSHOP = re.compile(r"\bworkshop\b", re.IGNORECASE)
+_WORKSHOP_VENUE = re.compile(r"\bproceedings\b|\binternational\b", re.IGNORECASE)
+
+
+def _is_running_header_line(line: str) -> bool:
+    if _RUNNING_HEADER.search(line):
+        return True
+    return bool(_WORKSHOP.search(line) and _WORKSHOP_VENUE.search(line))
+
+
 def _title_and_authors(
     raw_text_by_page: Dict[int, str],
     metadata_title: Optional[str],
     metadata_author: Optional[str],
+    layout_title: Optional[str] = None,
 ) -> Tuple[Optional[str], List[str]]:
-    """Title from metadata, else the first substantive first-page line; authors from metadata."""
-    first_page_text = raw_text_by_page.get(1, "")
-    first_page_lines = [line.strip() for line in first_page_text.splitlines() if line.strip()]
+    """Title and authors for a paper.
 
-    extracted_title = metadata_title
+    Title priority: the layout title (first ``# `` heading pymupdf4llm found on page 1),
+    then PDF metadata, then the first substantive first-page line that is not a running
+    header (venue/pages/copyright/DOI line). Authors come from metadata.
+    """
+    first_page_text = raw_text_by_page.get(1, "")
+    first_page_lines = [
+        line.strip() for line in first_page_text.splitlines()
+        if line.strip() and not _is_running_header_line(line)
+    ]
+
+    extracted_title = layout_title or metadata_title
     extracted_authors: List[str] = []
     if metadata_author:
         extracted_authors.append(metadata_author)
@@ -247,6 +269,7 @@ def _parse_academic_sections(
     paper_id: str,
     metadata_title: Optional[str] = None,
     metadata_author: Optional[str] = None,
+    layout_title: Optional[str] = None,
 ) -> ExtractedPaperDataSchema:
     """Detect academic sections and extract evidence with verified page numbers.
 
@@ -259,7 +282,9 @@ def _parse_academic_sections(
     current_lines: List[str] = []
 
     evidence_items: List[EvidenceItemSchema] = []
-    extracted_title, extracted_authors = _title_and_authors(raw_text_by_page, metadata_title, metadata_author)
+    extracted_title, extracted_authors = _title_and_authors(
+        raw_text_by_page, metadata_title, metadata_author, layout_title,
+    )
 
     # Scan pages sequentially to preserve page references
     for page_num in sorted(raw_text_by_page.keys()):
@@ -578,6 +603,18 @@ def _clean_heading_markdown(markdown: str) -> str:
     return text.strip(" :")
 
 
+def _layout_title(boxes: List[_LayoutBox]) -> Optional[str]:
+    """The paper title: the first level-1 (``# ``) heading pymupdf4llm marked on page 1."""
+    for box in boxes:
+        if box.page != 1:
+            continue
+        if re.match(r"^\s*#(?!#)\s", box.markdown):
+            title = _clean_heading_markdown(box.markdown)
+            if len(title) > 3 and not _is_running_header_line(title):
+                return title
+    return None
+
+
 def _is_known_section_name(title: str) -> bool:
     normalized = " ".join(title.lower().split()).strip(" :.")
     parts = [p for p in re.split(r"\s*(?:,|&|\band\b)\s*", normalized) if p]
@@ -798,7 +835,7 @@ def _parse_sections_with_layout(
         for key, (_, heading) in sorted(span_headings.items(), key=lambda kv: kv[1][0])
     ]
 
-    title, authors = _title_and_authors(raw_text_by_page, metadata_title, metadata_author)
+    title, authors = _title_and_authors(raw_text_by_page, metadata_title, metadata_author, _layout_title(boxes))
     texts = {key: span.text for key, span in spans.items()}
     rq_text = texts.get("research_questions")
     rq_list = [line.strip() for line in rq_text.splitlines() if line.strip()] if rq_text else None
@@ -831,16 +868,17 @@ async def _detect_sections_with_layout(
     paper_id: str,
     metadata: Dict[str, Any],
     started_at: float,
-) -> Tuple[Optional[ExtractedPaperDataSchema], Optional[str]]:
+) -> Tuple[Optional[ExtractedPaperDataSchema], Optional[str], Optional[str]]:
     """Run layout heading detection inside the PDF time budget.
 
-    Returns (data, warning). ``data`` is None whenever the regex parser should be used.
+    Returns (data, warning, layout_title). ``data`` is None whenever the regex parser
+    should be used; ``layout_title`` is still returned then so the fallback can use it.
     """
     fallback = "used text-pattern section detection instead"
     timeout = float(settings.PDF_PROCESSING_TIMEOUT)
     budget = timeout - (time.perf_counter() - started_at) - min(_LAYOUT_RESERVE_SECONDS, 0.25 * timeout)
     if budget <= 0.5:
-        return None, f"Layout heading detection skipped: PDF time budget exhausted; {fallback}."
+        return None, f"Layout heading detection skipped: PDF time budget exhausted; {fallback}.", None
 
     loop = asyncio.get_running_loop()
     try:
@@ -849,22 +887,23 @@ async def _detect_sections_with_layout(
         )
     except asyncio.TimeoutError:
         logger.warning(f"Layout heading detection for '{paper_id}' exceeded {budget:.1f}s")
-        return None, f"Layout heading detection exceeded its {budget:.1f}s budget; {fallback}."
+        return None, f"Layout heading detection exceeded its {budget:.1f}s budget; {fallback}.", None
     except Exception as e:  # any layout/library failure must not fail the extraction
         logger.warning(f"Layout heading detection failed for '{paper_id}': {e}")
-        return None, f"Layout heading detection failed ({type(e).__name__}: {e}); {fallback}."
+        return None, f"Layout heading detection failed ({type(e).__name__}: {e}); {fallback}.", None
 
+    title = _layout_title(boxes)
     data, spans, problem = _parse_sections_with_layout(
         boxes, raw_text_by_page, paper_id, metadata.get("title"), metadata.get("author"),
     )
     if problem:
         logger.warning(f"'{paper_id}': {problem}")
-        return None, f"{problem}; {fallback}."
+        return None, f"{problem}; {fallback}.", title
     if data is None:
         logger.info(f"No layout headings found for '{paper_id}'; using text-pattern section detection.")
-        return None, None
+        return None, None, title
     logger.info(f"Layout headings used for '{paper_id}': {sorted(spans)}")
-    return data, None
+    return data, None, title
 
 
 async def read_research_paper(
@@ -1012,8 +1051,9 @@ async def read_research_paper(
         # 5. Parse Academic Sections & Evidence References.
         #    Primary: layout headings (PyMuPDF documents only). Fallback: regex on text lines.
         extracted_data: Optional[ExtractedPaperDataSchema] = None
+        layout_title: Optional[str] = None
         if used_method == "pymupdf":
-            extracted_data, layout_warning = await _detect_sections_with_layout(
+            extracted_data, layout_warning, layout_title = await _detect_sections_with_layout(
                 pdf_bytes, raw_text, eff_id, metadata, start_time,
             )
             if layout_warning:
@@ -1024,6 +1064,7 @@ async def read_research_paper(
                 paper_id=eff_id,
                 metadata_title=metadata.get("title"),
                 metadata_author=metadata.get("author"),
+                layout_title=layout_title,
             )
 
         # Determine status

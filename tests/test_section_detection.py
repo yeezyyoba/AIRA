@@ -287,6 +287,76 @@ def plain_pdf(text: str) -> bytes:
     return data
 
 
+# ==============================================================================
+# Title extraction: skip the venue running header above the real title
+# ==============================================================================
+
+RUNNING_HEADER_PAGE = (
+    "Proceedings of the The 17th International Workshop on Semantic Evaluation (SemEval-2023), pages 1172-1182\n"
+    "July 13-14, 2023 (c)2023 Association for Computational Linguistics doi: 10.18653/v1/x\n"
+    "GMNLP at SemEval-2023 Task 12:\n"
+    "Sentiment Analysis with Phylogeny-Based Adapters\n"
+    "Abstract\nWe study sentiment.\n"
+)
+
+
+def test_layout_title_heading_is_used_over_running_header():
+    boxes = [
+        box(1, "text", 50, 20, 545, 40, RUNNING_HEADER_PAGE.splitlines()[0]),
+        _LayoutBox(page=1, cls="title", bbox=(80, 60, 515, 90), page_width=595.0,
+                   markdown="# **GMNLP at SemEval-2023 Task 12: Sentiment Analysis with Phylogeny-Based Adapters** \n\n",
+                   raw="GMNLP at SemEval-2023 Task 12:\nSentiment Analysis with Phylogeny-Based Adapters"),
+        box(1, "section-header", 50, 120, 200, 132, "Abstract"),
+        box(1, "text", 50, 140, 545, 200, "We study sentiment."),
+    ]
+    data, _, problem = _parse_sections_with_layout(boxes, {1: RUNNING_HEADER_PAGE}, "p")
+    assert problem is None
+    assert data.title == "GMNLP at SemEval-2023 Task 12: Sentiment Analysis with Phylogeny-Based Adapters"
+
+
+@pytest.mark.parametrize("line", [
+    "Proceedings of the 61st Annual Meeting of the ACL",
+    "Volume 1: Long Papers, pages 100-110",
+    "©2023 Association for Computational Linguistics",
+    "DOI: 10.1000/xyz123",
+    "The 17th International Workshop on Semantic Evaluation",
+    "Workshop Proceedings, Toronto, Canada",
+])
+def test_running_header_lines_are_recognised(line):
+    assert paper_reader._is_running_header_line(line)
+
+
+@pytest.mark.parametrize("line", [
+    "A Shared-Task Workshop Report on African Sentiment Analysis",
+    "GMNLP at SemEval-2023 Task 12:",
+])
+def test_title_lines_are_not_running_headers(line):
+    assert not paper_reader._is_running_header_line(line)
+
+
+def test_fallback_title_keeps_workshop_in_a_real_title():
+    page = "Proceedings of the ACL, pages 1-9\nLessons from a Low-Resource NLP Workshop\nAbstract\nText.\n"
+    title, _ = paper_reader._title_and_authors({1: page}, None, None)
+    assert title == "Lessons from a Low-Resource NLP Workshop"
+
+
+def test_fallback_title_skips_running_header_lines():
+    title, _ = paper_reader._title_and_authors({1: RUNNING_HEADER_PAGE}, None, None)
+    assert title == "GMNLP at SemEval-2023 Task 12:"
+
+
+@pytest.mark.anyio
+async def test_layout_title_survives_regex_fallback(monkeypatch):
+    """Layout found the title but no usable section headings: the regex parser still gets it."""
+    title_box = _LayoutBox(page=1, cls="title", bbox=(50, 60, 545, 90), page_width=595.0,
+                           markdown="# **A Real Paper Title**", raw="A Real Paper Title")
+    monkeypatch.setattr(paper_reader, "_extract_layout_boxes", lambda _: [title_box])
+    result = await read_research_paper(
+        plain_pdf("Proceedings of the Workshop, pages 1-9\n" + REGEX_PAGE), paper_id="title_fallback",
+    )
+    assert result.extracted_data.title == "A Real Paper Title"
+
+
 @pytest.mark.anyio
 async def test_no_layout_headings_uses_regex_parser_silently(monkeypatch):
     monkeypatch.setattr(paper_reader, "_extract_layout_boxes", lambda _: [])
