@@ -99,6 +99,19 @@ The graph includes nodes for:
 
 Conditional routing allows the agent to adapt its execution path based on the current state and tool results.
 
+#### Tool selection: the LLM proposes, the code disposes
+
+Tool selection is hybrid (`agents/tool_calling.py`, node `propose_tool_call`). It follows the function-calling pattern of the course brief (slides 10-14): "the model decides what to ask for; the application decides what to trust and execute".
+
+1. **Rules define what is legal.** `select_tools` computes the rule-based choice and the list of *legal options* for the current step: every remaining PDF candidate during extraction, every remaining analysis action during `compare_and_analyze`, and the single action elsewhere. The phase order, the stopping rules and the retry policy stay in code.
+2. **The LLM proposes.** When there is a real choice (two or more options, or a tool with free arguments: search, retrieval, gap analysis), `propose_tool_call` sends Gemini, or Groq as the fallback, a compact state summary and the function declarations (`TOOL_SPECS`) of the legal tools only. It uses native function calling: Gemini `mode=ANY` with automatic function calling disabled, Groq `tool_choice="required"`. Paper titles and other API-sourced text are sent as `<untrusted_data>`.
+3. **Code validates.** The proposal is accepted only if the tool is legal in the current phase, the arguments pass the tool's Pydantic model (unknown fields forbidden), no free-text argument contains a URL or path, every paper id belongs to the session, and an LLM-written search query passes the same scope/risk check as user requests. Numeric limits (`max_results`, `top_k`, the user's year range) are clamped. The LLM never supplies URLs, file paths, metadata payloads or citation requests: code fills those in from the session state. For whole-phase analyses (comparison, methodology, results, gaps, report) the paper list is always every extracted paper, because a subset would silently drop evidence; only retrieval may be narrowed.
+4. **Rules fall back.** An invalid proposal, a degraded or failing router, or a call slower than `TOOL_SELECTION_TIMEOUT_SECONDS` falls back to the rule choice. If an LLM-written search finds nothing, the retry uses the rule-built query before any reformulation.
+
+Every decision is an observable log entry (`ACCEPTED`, `REJECTED` with the reason, `FALLBACK`, `SINGLE_OPTION`) and appears in the live event log. The counts are kept in `tool_selection_stats`, returned by the API and summarised in the report's limitations section.
+
+**Why hybrid:** keyword routing cannot rank papers by relevance or phrase a good query, which is where an LLM helps. But the tool sequence is also a safety boundary: a hallucinated or injected tool call must not skip phases, read arbitrary URLs or fabricate citations. Keeping the rules as validator and fallback means the agent behaves at least as well as the deterministic version when the LLM is wrong or unavailable. `TOOL_SELECTION_MODE=rules` disables proposals; the test suite uses it so that it stays deterministic and offline, and the LLM-mode tests opt in explicitly.
+
 ### 3.4 LLM Model Router
 
 The model router manages language-model access.
@@ -107,6 +120,7 @@ The model router manages language-model access.
 - Groq is the fallback provider.
 - Provider errors are classified and handled using bounded retry and fallback policies.
 - When both providers are unavailable, the system can enter degraded mode.
+- `ModelRouter.generate_tool_call` provides native function calling (Gemini function declarations, Groq tools) with the same retry, fallback and degraded-mode handling. A response without a tool call, or with malformed arguments, counts as an invalid response.
 
 In degraded mode, supported deterministic operations remain available even when LLM reasoning is unavailable.
 
@@ -134,7 +148,7 @@ Meta-tools act on the agent's own process. They live in `meta_tools/` as pure fu
 | `critic.critique_research`     | `critique_findings`                    |
 | `finish.determine_stopping_reason` | `finish_task`                      |
 
-Tool selection is handled by the `select_tools` node. Tool-output checks live in `validation/tool_validation.py` and evidence rules in `validation/evidence_validation.py`. The conditional edges (branches, loops, retries, step budget) are in `agents/routing.py`; `agents/graph.py` wires nodes and edges together.
+Tool selection is handled by the `select_tools` node (rules and legal options) and the `propose_tool_call` node (LLM proposal and validation, see 3.3). Tool-output checks live in `validation/tool_validation.py` and evidence rules in `validation/evidence_validation.py`. The conditional edges (branches, loops, retries, step budget) are in `agents/routing.py`; `agents/graph.py` wires nodes and edges together.
 
 ## 4. Data and Storage Architecture
 
@@ -174,7 +188,7 @@ A typical research request follows this adaptive process:
 3. LangGraph initializes the research state.
 4. The agent determines whether clarification is necessary.
 5. A research plan is created.
-6. Appropriate tools are selected and executed.
+6. The rules list the legal next actions; the LLM proposes one through function calling; code validates it (or falls back to the rule choice) and executes it.
 7. Tool outputs are validated.
 8. Failed operations may be retried with corrected inputs, subject to configured limits.
 9. Relevant evidence is stored.

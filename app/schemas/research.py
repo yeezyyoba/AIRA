@@ -37,6 +37,10 @@ class ResearchResponse(BaseModel):
     retrieved_evidence: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     phase_statuses: Optional[Dict[str, str]] = Field(default_factory=dict)
     step_count: Optional[int] = None
+    tool_selection_stats: Dict[str, int] = Field(
+        default_factory=dict,
+        description="How the next tool was chosen: LLM proposals accepted/rejected, rule fallbacks, single-option steps",
+    )
     max_steps: Optional[int] = None
 
 

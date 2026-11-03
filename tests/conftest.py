@@ -42,6 +42,8 @@ os.environ.update({
     "MAX_SEARCH_RESULTS": "20",
     "MAX_PAPERS_TO_EXTRACT": "5",
     "MAX_PLAN_REVISIONS": "1",
+    # Deterministic, offline tool selection; LLM-mode tests opt in explicitly.
+    "TOOL_SELECTION_MODE": "rules",
     # Keep retry backoff short so failure-path tests stay fast.
     "ACADEMIC_INITIAL_BACKOFF_SECONDS": "0.01",
 })

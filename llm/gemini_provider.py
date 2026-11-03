@@ -3,10 +3,11 @@
 Integrates with the official Google Gen AI SDK (google-genai) with robust
 error classification for quotas, auth, rate limits, and network issues.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 import re
 import time
-from typing import Any, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -39,6 +40,30 @@ class LLMResponse:
     total_tokens: int = 0
     structured_data: Optional[Any] = None
     raw_response: Optional[Any] = None
+
+
+@dataclass
+class ToolCall:
+    """A model's proposed function call. Nothing has been executed yet."""
+    name: str
+    arguments: Dict[str, Any] = field(default_factory=dict)
+    call_id: Optional[str] = None
+
+
+def tool_call_response(call: ToolCall, provider: str, model: str, latency: float, raw: Any,
+                       prompt_tokens: int = 0, completion_tokens: int = 0) -> LLMResponse:
+    """Wrap a parsed tool call; ``content`` is the call as JSON so it is never empty."""
+    return LLMResponse(
+        content=json.dumps({"name": call.name, "arguments": call.arguments}, default=str),
+        provider=provider,
+        model=model,
+        latency_seconds=latency,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        structured_data=call,
+        raw_response=raw,
+    )
 
 
 def strip_json_fences(raw_text: str) -> str:
@@ -266,4 +291,69 @@ class GeminiProvider:
             total_tokens=total_tokens,
             structured_data=validated_obj,
             raw_response=response,
+        )
+
+    def generate_tool_call(
+        self,
+        prompt: str,
+        tools: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        """Ask Gemini to propose exactly one call to one of ``tools`` (native function calling).
+
+        Mode ANY forces a function call; automatic function calling is disabled
+        so the SDK never executes anything: the application validates and runs it.
+        """
+        self._ensure_authenticated()
+        declarations = [
+            types.FunctionDeclaration(
+                name=spec["name"],
+                description=spec.get("description", ""),
+                parameters_json_schema=spec.get("parameters") or {"type": "object", "properties": {}},
+            )
+            for spec in tools
+        ]
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            system_instruction=system_prompt if system_prompt else None,
+            tools=[types.Tool(function_declarations=declarations)],
+            tool_config=types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode="ANY",
+                    allowed_function_names=[spec["name"] for spec in tools],
+                )
+            ),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+
+        start_time = time.perf_counter()
+        try:
+            response = self._client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=config,
+            )
+        except Exception as e:
+            self._classify_and_raise(e)
+        latency = time.perf_counter() - start_time
+
+        calls = getattr(response, "function_calls", None) or []
+        if not calls:
+            raise InvalidResponseError("Gemini returned no function call.", provider=self.name)
+        first = calls[0]
+        name = getattr(first, "name", None)
+        args = getattr(first, "args", None)
+        if args is None:
+            args = {}
+        if not name or not isinstance(args, dict):
+            raise InvalidResponseError("Gemini returned a malformed function call.", provider=self.name)
+
+        usage = getattr(response, "usage_metadata", None)
+        prompt_tokens = (getattr(usage, "prompt_token_count", 0) or 0) if usage else 0
+        completion_tokens = (getattr(usage, "candidates_token_count", 0) or 0) if usage else 0
+        self.status = ProviderStatus.AVAILABLE
+        return tool_call_response(
+            ToolCall(name=name, arguments=dict(args), call_id=getattr(first, "id", None)),
+            self.name, self.model, latency, response, prompt_tokens, completion_tokens,
         )

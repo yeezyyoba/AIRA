@@ -19,6 +19,7 @@ from agents.nodes import (
     critique_findings,
     execute_tools,
     finish_task,
+    propose_tool_call,
     generate_report_node,
     receive_request,
     reflect_and_revise,
@@ -89,6 +90,12 @@ def build_research_graph(
             vector_db=vector_db,
         )
 
+    async def bound_propose_tool_call(
+        state: ResearchState,
+    ) -> Dict[str, Any]:
+        return await propose_tool_call(state, router=router)
+
+    workflow.add_node("propose_tool_call", bound_propose_tool_call)
     workflow.add_node("execute_tools", bound_execute_tools)
     workflow.add_node("validate_tool_outputs", validate_tool_outputs)
     workflow.add_node("retry_handler", retry_handler)
@@ -119,11 +126,13 @@ def build_research_graph(
         "select_tools",
         route_after_select_tools,
         {
+            "propose_tool_call": "propose_tool_call",
             "execute_tools": "execute_tools",
             "reflect_and_revise": "reflect_and_revise",
         },
     )
 
+    workflow.add_edge("propose_tool_call", "execute_tools")
     workflow.add_edge("execute_tools", "validate_tool_outputs")
 
     workflow.add_conditional_edges(

@@ -23,9 +23,11 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import uuid
 
+from agents import tool_calling
 from agents.state import ResearchState
 from app.core.config import settings
 from llm.model_router import ModelRouter, model_router as default_model_router
+from llm.provider_errors import InvalidResponseError
 from logging_config.logger import get_logger
 from memory.vector_store import ChromaVectorStore, vector_store as default_vector_store
 from services.paper_repository import PaperRepository, paper_repository as default_paper_repo
@@ -59,6 +61,9 @@ from meta_tools.plan_updater import (
 from meta_tools.planner import build_research_plan
 
 logger = get_logger("agents.nodes")
+
+# The LLM sees at most this many extraction candidates (the rule's choice is first).
+MAX_EXTRACTION_OPTIONS = 10
 
 TOOL_PHASES = {
     "search_academic_papers": "search_and_validate",
@@ -375,6 +380,9 @@ def receive_request(state: ResearchState) -> Dict[str, Any]:
         "stopping_reason": None,
         "risk_flags": [],
         "user_message": None,
+        "tool_options": [],
+        "tool_selection": None,
+        "tool_selection_stats": {},
         "security_flags": list(state.get("security_flags", [])),
         "observable_logs": logs,
         "is_degraded": False,
@@ -603,6 +611,8 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
     actions_done = set(state.get("analysis_actions_completed", []))
     pending_revision = state.get("pending_revision")
     selected, inputs, task, reason = None, {}, None, ""
+    # Legal options for this step (the LLM may pick among them); [0] is the rule choice.
+    options: List[Dict[str, Any]] = []
 
     def choose(tool, phase, tool_inputs, why):
         nonlocal selected, inputs, task, reason
@@ -670,6 +680,16 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
                 {"paper_id": pid, "file_path_or_url": url},
                 f"Extract and index full text of paper {pid} (most query-relevant remaining candidate).",
             )
+            meta_by_key = {_record_key(r): _original_metadata(r) for r in validated}
+            for cand_id, cand_url in candidates[:MAX_EXTRACTION_OPTIONS]:
+                meta = meta_by_key.get(cand_id) or {}
+                year = meta.get("year") or meta.get("publication_year")
+                options.append({
+                    "tool": "read_research_paper", "task": "extract_and_index",
+                    "inputs": {"paper_id": cand_id, "file_path_or_url": cand_url},
+                    "label": f"{meta.get('title') or 'untitled'}" + (f" ({year})" if year else ""),
+                    "reason": f"Extract and index full text of paper {cand_id}.",
+                })
         elif (
             len(extracted) < 2
             and discovered
@@ -728,8 +748,10 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
             ))
             for action, tool, tool_inputs, why in plan_actions:
                 if action not in actions_done and f"action:{action}" not in failed:
-                    choose(tool, "compare_and_analyze", tool_inputs, why)
-                    break
+                    if selected is None:
+                        choose(tool, "compare_and_analyze", tool_inputs, why)
+                    options.append({"tool": tool, "task": "compare_and_analyze",
+                                    "inputs": tool_inputs, "label": None, "reason": why})
             if selected is None:
                 done = [a for a, *_ in plan_actions if a in actions_done]
                 failed_actions = [a for a, *_ in plan_actions if f"action:{a}" in failed]
@@ -800,6 +822,11 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
         reason = f"Suppressed duplicate call to '{selected}' (identical inputs already succeeded)."
         selected, task, inputs = None, None, {}
 
+    if not selected:
+        options = []
+    elif not options:
+        options = [{"tool": selected, "task": task, "inputs": inputs, "label": None, "reason": reason}]
+
     if selected:
         phase_statuses[task] = "IN_PROGRESS"
         plan = _update_plan_task(plan, task, "IN_PROGRESS")
@@ -824,6 +851,119 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
         "failed_items": sorted(failed),
         "pending_revision": pending_revision,
         "validation_status": "PENDING",
+        "tool_options": options,
+        "step_count": step,
+        "observable_logs": logs,
+    }
+
+
+def _search_scope_problem(query: str) -> Optional[str]:
+    """Reuse the request scope/risk check on an LLM-written search query."""
+    assessment = assess_request(query)
+    if assessment["risks"]:
+        return "; ".join(assessment["risks"])
+    if assessment.get("out_of_scope"):
+        return "outside AIRA's language-research scope"
+    if assessment["missing"]:
+        return "; ".join(assessment["missing"])
+    return None
+
+
+async def propose_tool_call(state: ResearchState, router: Optional[ModelRouter] = None) -> Dict[str, Any]:
+    """Function calling: the LLM proposes the next call, code validates it (slides 11-14).
+
+    The rule-based choice from ``select_tools`` is the fallback whenever the
+    proposal is invalid, or the LLM is unavailable, degraded or too slow.
+    """
+    step = state.get("step_count", 0) + 1
+    llm = router or default_model_router
+    rule_tool = state.get("selected_tool")
+    rule_inputs = dict(state.get("tool_inputs") or {})
+    rule_task = state.get("current_task")
+    options = list(state.get("tool_options") or []) or [
+        {"tool": rule_tool, "task": rule_task, "inputs": rule_inputs, "label": None, "reason": ""}
+    ]
+    stats = {key: 0 for key in tool_calling.STATS_KEYS}
+    stats.update(state.get("tool_selection_stats") or {})
+    rule_text = tool_calling.format_call(rule_tool, _summarize_inputs(rule_inputs))
+    proposal: Optional[Dict[str, Any]] = None
+    provider = None
+    tool, inputs, task = rule_tool, rule_inputs, rule_task
+
+    if not tool_calling.needs_llm(options):
+        outcome, source = "SINGLE_OPTION", "rules"
+        decision = f"Single legal option; no proposal needed; rule chose {rule_text}."
+        stats["single_option"] += 1
+    elif _router_degraded(llm):
+        outcome, source = "FALLBACK", "rules"
+        decision = f"LLM unavailable (degraded mode); rule chose {rule_text}."
+        stats["fallback"] += 1
+    else:
+        timeout = float(settings.TOOL_SELECTION_TIMEOUT_SECONDS)
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    llm.generate_tool_call,
+                    tool_calling.build_prompt(state, options),
+                    tool_calling.specs_for_options(options),
+                    system_prompt=tool_calling.SYSTEM_PROMPT,
+                ),
+                timeout=timeout,
+            )
+            call = response.structured_data
+            provider = getattr(response, "provider", None)
+            if call is None or not getattr(call, "name", None):
+                raise InvalidResponseError("Router returned no tool call.", provider=provider or "router")
+        except asyncio.TimeoutError:
+            outcome, source = "FALLBACK", "rules"
+            decision = f"LLM timed out after {timeout:g}s; rule chose {rule_text}."
+            stats["fallback"] += 1
+        except Exception as exc:
+            outcome, source = "FALLBACK", "rules"
+            decision = f"LLM unavailable ({type(exc).__name__}); rule chose {rule_text}."
+            stats["fallback"] += 1
+        else:
+            proposal = {"name": call.name, "arguments": call.arguments, "call_id": getattr(call, "call_id", None)}
+            proposed_text = tool_calling.format_call(call.name, call.arguments)
+            check = tool_calling.validate_proposal(
+                call.name, call.arguments, options, state,
+                max_search_results=min(int(state.get("max_results") or settings.MAX_SEARCH_RESULTS) * 2, 100),
+                max_top_k=int(settings.RAG_MAX_TOP_K),
+                already_succeeded=lambda t, i: _signature(t, i) in set(state.get("successful_tool_signatures", [])),
+                scope_check=_search_scope_problem,
+            )
+            if check.ok:
+                outcome, source = "ACCEPTED", "llm"
+                tool, inputs, task = check.tool, check.inputs, check.task or rule_task
+                decision = f"LLM proposed {proposed_text}: accepted."
+                if check.notes:
+                    decision += f" Adjusted: {'; '.join(check.notes)}."
+                if (tool, _signature(tool, inputs)) != (rule_tool, _signature(rule_tool, rule_inputs)):
+                    decision += f" (Rule would have chosen {rule_text}.)"
+                stats["accepted"] += 1
+            else:
+                outcome, source = "REJECTED", "rules"
+                decision = f"LLM proposed {proposed_text}: rejected because {check.reason}; rule chose {rule_text}."
+                stats["rejected"] += 1
+
+    logs = list(state.get("observable_logs", []))
+    logs.append(_log_event(
+        state, "propose_tool_call", decision, tool=tool, outcome=outcome,
+        details={"source": source, "provider": provider, "options": len(options)}, step=step,
+    ))
+    return {
+        "selected_tool": tool,
+        "tool_inputs": inputs,
+        "current_task": task,
+        "tool_selection": {
+            "source": source,
+            "outcome": outcome,
+            "proposal": proposal,
+            "rule_choice": {"tool": rule_tool, "inputs": rule_inputs},
+            "reason": decision,
+            "provider": provider,
+        },
+        "tool_selection_stats": stats,
         "step_count": step,
         "observable_logs": logs,
     }
@@ -1215,7 +1355,21 @@ def retry_handler(state: ResearchState) -> Dict[str, Any]:
         current += 1
         counts[key] = current
         adjustment = "same parameters"
-        if tool == "search_academic_papers":
+        selection = dict(state.get("tool_selection") or {})
+        rule_inputs = (selection.get("rule_choice") or {}).get("inputs") or {}
+        if (
+            tool == "search_academic_papers"
+            and selection.get("source") == "llm"
+            and not selection.get("rule_fallback_used")
+            and rule_inputs.get("query")
+            and rule_inputs.get("query") != inputs.get("query")
+        ):
+            # The LLM's query found nothing: retry with the rule-built query
+            # instead of reformulating the LLM's query again.
+            inputs = dict(rule_inputs)
+            selection["rule_fallback_used"] = True
+            adjustment = f"the rule-built query '{inputs['query']}' (the LLM-written query returned no usable result)"
+        elif tool == "search_academic_papers":
             inputs["query"] = _reformulate_search_query(inputs.get("query", ""), state.get("domain"), current)
             adjustment = f"reformulated query '{inputs['query']}'"
         logs.append(_log_event(
@@ -1226,6 +1380,7 @@ def retry_handler(state: ResearchState) -> Dict[str, Any]:
         return {
             "retry_counts": counts,
             "tool_inputs": inputs,
+            "tool_selection": selection or state.get("tool_selection"),
             "validation_status": "RETRY_REQUESTED",
             "step_count": step,
             "observable_logs": logs,
@@ -1573,6 +1728,17 @@ def _references_from_state(state: ResearchState) -> List[Dict[str, Any]]:
     return references
 
 
+def _tool_selection_summary(stats: Dict[str, int]) -> str:
+    accepted, rejected = stats.get("accepted", 0), stats.get("rejected", 0)
+    fallback, single = stats.get("fallback", 0), stats.get("single_option", 0)
+    proposals = accepted + rejected
+    return (
+        f"Tool selection: the LLM proposed {proposals} tool call(s); {accepted} passed validation and were used, "
+        f"{rejected} were rejected in favour of the rule-based choice. {fallback} decision(s) fell back to "
+        f"the rules because the LLM was unavailable, and {single} step(s) had a single legal action."
+    )
+
+
 def _partial_report(state: ResearchState, goal: str, extracted: List[str], llm, error: Optional[str]) -> Dict[str, Any]:
     """A clearly labelled PARTIAL report. It states what is unknown; it invents nothing."""
     validated = state.get("validated_papers", [])
@@ -1660,6 +1826,11 @@ async def generate_report_node(
     report["extracted_papers"] = extracted
     report["security_flags"] = state.get("security_flags", [])
     report["is_degraded"] = bool(report.get("is_degraded")) or bool(state.get("is_degraded")) or _router_degraded(llm)
+    stats = state.get("tool_selection_stats") or {}
+    report["tool_selection_stats"] = stats
+    if any(stats.values()):
+        summary = _tool_selection_summary(stats)
+        report["limitations_of_analysis"] = f"{report.get('limitations_of_analysis') or ''} {summary}".strip()
 
     saved_paths: Dict[str, str] = {}
     try:

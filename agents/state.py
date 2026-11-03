@@ -60,6 +60,11 @@ class ResearchState(TypedDict, total=False):
     risk_flags: List[str]
     security_flags: List[Dict[str, Any]]
 
+    # LLM function calling for tool selection (agents/tool_calling.py)
+    tool_options: List[Dict[str, Any]]          # legal options for this step; [0] is the rule choice
+    tool_selection: Optional[Dict[str, Any]]    # last decision: source, proposal, rule_choice, reason
+    tool_selection_stats: Dict[str, int]        # accepted / rejected / fallback / single_option
+
     # Execution history and report
     tool_results: List[Dict[str, Any]]
     reflections: List[str]

@@ -58,6 +58,7 @@ _NODE_LABELS = {
     "ask_user": "Paused to ask for clarification",
     "create_plan": "Created research plan",
     "select_tools": "Selected next tools",
+    "propose_tool_call": "LLM proposed the next tool call (validated by code)",
     "execute_tools": "Executed tools",
     "validate_tool_outputs": "Validated tool outputs",
     "retry_handler": "Handled retry",
@@ -124,6 +125,7 @@ def _build_response(values: Dict[str, Any], session_id: str, default_status: str
         phase_statuses=values.get("phase_statuses", {}),
         step_count=values.get("step_count"),
         max_steps=values.get("max_steps"),
+        tool_selection_stats=values.get("tool_selection_stats") or {},
     )
 
 
@@ -138,7 +140,7 @@ def _publish_node_update(session_id: str, node: str, update: Any, seen_logs: Lis
             if not isinstance(entry, dict):
                 continue
             outcome = str(entry.get("outcome") or "")
-            level = "ERROR" if outcome in ("FAILURE", "FAILED", "ERROR") else "WARNING" if outcome in ("PARTIAL", "RETRY", "DEGRADED") else "INFO"
+            level = "ERROR" if outcome in ("FAILURE", "FAILED", "ERROR") else "WARNING" if outcome in ("PARTIAL", "RETRY", "DEGRADED", "REJECTED", "FALLBACK") else "INFO"
             tool = entry.get("tool")
             message = entry.get("decision") or ""
             if tool:

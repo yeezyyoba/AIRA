@@ -60,6 +60,7 @@ The run also exposed four defects, all fixed:
 | 33 | No research-scope check: "who won the World Cup", "tell me a joke" or "write my cover letter" ran the full ~100-step research workflow (and were all labelled "Machine Learning"). | Keyword-based scope check in `meta_tools/ask_user.py` before any tool runs: language research proceeds; AI/ML topics without a language angle get a clarification question; anything else stops with the new status `OUT_OF_SCOPE` and an explanatory `message`. |
 | 34 | Frontend: `PARTIAL` and `UNACCEPTABLE_RISK` were missing from the terminal-status list, so the UI polled those sessions forever and showed a spinning "in progress" badge. | Added them (and `OUT_OF_SCOPE`) as terminal statuses with their own badges, plus a banner explaining refused requests. |
 | 35 | Verifiable Citations tab crashed (citations are objects since the audit) and papers were identified only by DOI. | Citations normalised to text; papers shown as "First author et al., year" with the full title, in the UI and the Markdown report. |
+| 36 | Tool selection was purely rule based, although the course brief (slides 10-14) asks for function calling: "the model proposes the route; the application decides what to trust and execute". | Hybrid selection: `select_tools` lists the legal options; the new `propose_tool_call` node lets Gemini/Groq propose a call with native function calling; code validates the tool, arguments (Pydantic), paper ids and limits, and falls back to the rule choice when the proposal is invalid or the LLM is unavailable. Decisions are logged and counted (`tool_selection_stats`). Tested offline in `tests/test_tool_calling.py`, including a paper title that tries to inject a tool call. |
 
 ## 2. Test expectations corrected (with reasons)
 
@@ -85,6 +86,7 @@ New tests: `tests/test_reliability.py` (29), `tests/test_prompt_injection.py` (1
 | Max two retries, correct counting/exhaustion | Per tool/item; `MAX_RETRIES=2`; tested |
 | Unreliable input tests | Missing, conflicting, invalid, timeouts, injection, invalid tool output, PDF failures |
 | Agentic logs | Plan, tool reasons, results, plan revisions (`PLAN_REVISED`), reflections, retries, stopping reason |
+| Function calling | Tool specs (name, when-to-use description, JSON schema) for all 10 execution tools; native Gemini/Groq function calling proposes the next call, and code validates and executes it, with the rules as fallback |
 | ≥5 execution tools, integrated | Search, metadata validation (function calling), PDF reader, RAG retriever, result analyzer (compute), citation generator, file manager (system) — all executed in the end-to-end test |
 
 ## 4. Not implemented / remaining limitations
@@ -107,5 +109,10 @@ New tests: `tests/test_reliability.py` (29), `tests/test_prompt_injection.py` (1
 * `/research/sessions` runs the whole workflow inside the request; long runs need a
   generous client timeout (a background-job API would be better).
 * Backup files (`agents/nodes.py.bak*`, `evaluation/*.backup`) were left untouched.
+* LLM tool selection is tested only with mocked provider clients. Real Gemini/Groq
+  function-calling responses (especially for tools with an empty parameter schema) have
+  not been exercised yet; a live run should confirm the accepted/rejected ratio.
+  Each proposal costs one LLM call and one graph step (about 6 per run, within
+  `MAX_AGENT_STEPS=150`).
 * Live provider behaviour (real Gemini/Groq/OpenAlex) was not exercised in this audit;
   use `scripts/manual_test_*.py` for that.

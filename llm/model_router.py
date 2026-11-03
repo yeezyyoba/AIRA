@@ -5,7 +5,7 @@ detects failures, handles bounded retries for transient errors, switches to Groq
 on quota exhaustion or outages, and manages graceful Degraded Mode.
 """
 import time
-from typing import Any, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -306,6 +306,27 @@ class ModelRouter:
             "generate_structured",
             prompt,
             schema,
+            system_prompt=system_prompt,
+            temperature=temperature,
+        )
+
+    def generate_tool_call(
+        self,
+        prompt: str,
+        tools: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        """Route a function-calling request; ``structured_data`` is the proposed ``ToolCall``.
+
+        Same retry / Groq fallback / degraded-mode handling as ``generate``. A
+        response without a tool call, or with malformed arguments, is an
+        ``InvalidResponseError`` (retried, then falls back).
+        """
+        return self._route_request(
+            "generate_tool_call",
+            prompt,
+            tools,
             system_prompt=system_prompt,
             temperature=temperature,
         )

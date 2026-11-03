@@ -5,7 +5,9 @@ and returns the name of the next node. Together they implement the agent's
 branches, loops, retries and stopping rules:
 
 * ``check_information`` -> ask the user, refuse (risk), or plan.
-* ``select_tools`` -> execute a tool, or reflect when nothing is left to do.
+* ``select_tools`` -> let the LLM propose the call (``llm`` mode) or execute the
+  rule choice directly (``rules`` mode), or reflect when nothing is left to do.
+* ``propose_tool_call`` -> always ``execute_tools`` (with the validated choice).
 * ``validate_tool_outputs`` -> retry a failed/invalid call, or store evidence.
 * ``retry_handler`` -> run the tool again, or give up and reflect.
 * ``reflect_and_revise`` -> pick the next tool, or move on to critique.
@@ -43,7 +45,8 @@ def route_after_check_information(state: ResearchState) -> str:
 
 def route_after_select_tools(state: ResearchState) -> str:
     if state.get("selected_tool"):
-        return "execute_tools"
+        # In "llm" mode the LLM proposes the call first; code validates it.
+        return "propose_tool_call" if settings.TOOL_SELECTION_MODE == "llm" else "execute_tools"
     return "reflect_and_revise"
 
 

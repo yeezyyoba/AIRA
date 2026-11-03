@@ -11,7 +11,7 @@ from pydantic import BaseModel
 import groq
 
 from app.core.config import settings
-from llm.gemini_provider import LLMResponse, strip_json_fences
+from llm.gemini_provider import LLMResponse, ToolCall, strip_json_fences, tool_call_response
 from llm.provider_errors import (
     AuthenticationError,
     BadRequestError,
@@ -242,4 +242,66 @@ class GroqProvider:
             total_tokens=total_tokens,
             structured_data=validated_obj,
             raw_response=response,
+        )
+
+    def generate_tool_call(
+        self,
+        prompt: str,
+        tools: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        """Ask Groq to propose exactly one call to one of ``tools`` (tool_choice="required")."""
+        self._ensure_authenticated()
+        messages: List[Dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        groq_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": spec["name"],
+                    "description": spec.get("description", ""),
+                    "parameters": spec.get("parameters") or {"type": "object", "properties": {}},
+                },
+            }
+            for spec in tools
+        ]
+
+        start_time = time.perf_counter()
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                tools=groq_tools,
+                tool_choice="required",
+            )
+        except Exception as e:
+            self._classify_and_raise(e)
+        latency = time.perf_counter() - start_time
+
+        message = response.choices[0].message if getattr(response, "choices", None) else None
+        tool_calls = getattr(message, "tool_calls", None) or []
+        if not tool_calls:
+            raise InvalidResponseError("Groq returned no tool call.", provider=self.name)
+        first = tool_calls[0]
+        function = getattr(first, "function", None)
+        name = getattr(function, "name", None)
+        raw_args = getattr(function, "arguments", None)
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except (TypeError, ValueError) as exc:
+            raise InvalidResponseError(f"Groq tool-call arguments are not valid JSON: {exc}", provider=self.name)
+        if not name or not isinstance(args, dict):
+            raise InvalidResponseError("Groq returned a malformed tool call.", provider=self.name)
+
+        usage = getattr(response, "usage", None)
+        prompt_tokens = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        completion_tokens = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        self.status = ProviderStatus.AVAILABLE
+        return tool_call_response(
+            ToolCall(name=name, arguments=args, call_id=getattr(first, "id", None)),
+            self.name, self.model, latency, response, prompt_tokens, completion_tokens,
         )

@@ -1,5 +1,5 @@
 """Application Settings and Configuration."""
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # nodes), so a complete multi-paper workflow needs on the order of 100.
     MAX_AGENT_STEPS: int = 150
     MAX_RETRIES: int = 2
+    # "llm": the LLM proposes the next tool call (native function calling) and
+    # code validates it, falling back to the rule choice. "rules": rules only.
+    TOOL_SELECTION_MODE: Literal["llm", "rules"] = "llm"
+    TOOL_SELECTION_TIMEOUT_SECONDS: float = 20.0
     MAX_PAPERS_TO_EXTRACT: int = 5
     MAX_PLAN_REVISIONS: int = 1
     METADATA_VALIDATION_CONCURRENCY: int = 5
