@@ -110,13 +110,21 @@ AIRA provides seven execution tools:
 
 ### Meta-tools
 
-The agent also uses meta-tools for:
+Meta-tools act on the agent's own process rather than the outside world. Each one is a plain function in `meta_tools/`; the LangGraph node that uses it (in `agents/nodes.py`) only logs the decision and updates the state.
 
-- Research planning and plan revision.
-- Asking the user for clarification.
-- Critiquing findings.
-- Selecting and coordinating tools.
-- Finishing research tasks.
+| Meta-tool    | File                         | Used by node(s)                         | What it decides                                                                 |
+| ------------ | ---------------------------- | --------------------------------------- | ------------------------------------------------------------------------------- |
+| Planner      | `meta_tools/planner.py`      | `create_plan`                           | The six-phase research plan; recognizes work already done on resumed sessions   |
+| Plan updater | `meta_tools/plan_updater.py` | `store_evidence`, `reflect_and_revise`  | Checks off, blocks or re-opens phases; revises the plan to expand the search    |
+| Ask user     | `meta_tools/ask_user.py`     | `check_information`, `ask_user`         | Whether the topic is missing or too broad, or the request is an unacceptable risk |
+| Critic       | `meta_tools/critic.py`       | `critique_findings`                     | APPROVED, NEEDS_REVISION or INSUFFICIENT_EVIDENCE                               |
+| Finish       | `meta_tools/finish.py`       | `finish_task`                           | The final stopping reason (GOAL_ACHIEVED, PARTIAL, INSUFFICIENT_EVIDENCE, …)    |
+
+Tool selection (choosing the next execution tool from the plan) is done by the `select_tools` node.
+
+### Validation
+
+Every tool output is checked by `validation/tool_validation.py` (VALID, EMPTY, INVALID or ERROR) before the agent trusts it; INVALID and ERROR route to the retry handler. `validation/evidence_validation.py` decides what may enter the research state as evidence (no output from failed calls, no unusable extractions) and flags prompt-injection text found inside papers.
 
 ---
 
@@ -168,7 +176,7 @@ The agent also uses meta-tools for:
 
 ```text
 AIRA/
-├── agents/              # LangGraph agent workflow
+├── agents/              # LangGraph workflow: graph.py (wiring), nodes.py (steps), routing.py (conditional edges), state.py, prompts.py
 ├── app/                 # FastAPI application and API routes
 ├── data/                # Application and research data
 ├── evaluation/          # Benchmarks, evaluators, and reports
@@ -176,12 +184,12 @@ AIRA/
 ├── llm/                 # LLM providers, fallback, and model router
 ├── logging_config/      # Logging configuration
 ├── memory/              # Research memory and retrieval support
-├── meta_tools/          # Planning, critique, and coordination tools
+├── meta_tools/          # Planner, plan updater, ask user, critic, finish
 ├── scripts/             # Utility scripts
 ├── services/            # Application services
 ├── tests/               # Automated tests
 ├── tools/               # Research execution tools
-├── validation/          # Output and evidence validation
+├── validation/          # Pydantic schemas, tool-output validation, evidence rules
 ├── .env.example         # Environment variable template
 ├── requirements.txt     # Python dependencies
 ├── run.py               # Backend launcher

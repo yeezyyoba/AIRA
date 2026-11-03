@@ -124,16 +124,17 @@ In degraded mode, supported deterministic operations remain available even when 
 
 ### 3.6 Meta-tools
 
-Meta-tools support the agent's decision-making and coordination.
+Meta-tools act on the agent's own process. They live in `meta_tools/` as pure functions with no LangGraph dependency, so they can be unit-tested directly. Graph nodes call them and then log the decision and update state.
 
-They provide:
+| Meta-tool                      | Node(s)                                |
+| ------------------------------ | -------------------------------------- |
+| `planner.build_research_plan`  | `create_plan`                          |
+| `plan_updater.*`               | `store_evidence`, `reflect_and_revise` |
+| `ask_user.assess_request`      | `check_information`                    |
+| `critic.critique_research`     | `critique_findings`                    |
+| `finish.determine_stopping_reason` | `finish_task`                      |
 
-- Research planning.
-- Plan revision.
-- User clarification.
-- Tool coordination.
-- Finding critique.
-- Research completion control.
+Tool selection is handled by the `select_tools` node. Tool-output checks live in `validation/tool_validation.py` and evidence rules in `validation/evidence_validation.py`. The conditional edges (branches, loops, retries, step budget) are in `agents/routing.py`; `agents/graph.py` wires nodes and edges together.
 
 ## 4. Data and Storage Architecture
 

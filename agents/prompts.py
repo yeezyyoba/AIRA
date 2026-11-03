@@ -1,8 +1,8 @@
 """AIRA Agent Prompts.
 
-Contains system prompts and instruction templates for planning, critique,
-reflection, and evidence synthesis.
-Scheduled for implementation in Phase 7.
+The system prompt sent with every LLM narrative-synthesis request (currently
+the paper comparator in ``tools/paper_comparator.py``). It sets the
+non-negotiable rule for the model: only claims traceable to extracted evidence.
 """
 
 AIRA_SYSTEM_PROMPT = """You are AIRA (Amharic Intelligent Research Assistant),

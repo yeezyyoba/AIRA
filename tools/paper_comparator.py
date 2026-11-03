@@ -13,6 +13,7 @@ import asyncio
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from agents.prompts import AIRA_SYSTEM_PROMPT
 from llm.model_router import ModelRouter, model_router as default_model_router
 from logging_config.logger import get_logger
 from memory.vector_store import ChromaVectorStore, vector_store as default_vector_store
@@ -367,7 +368,9 @@ async def compare_research_papers(
         try:
             prompt = _build_context_prompt_for_llm(paper_ids, loaded_papers, matrix)
             # The provider SDKs are synchronous; keep them off the event loop.
-            resp = await asyncio.to_thread(llm.generate, prompt=prompt, temperature=0.2)
+            resp = await asyncio.to_thread(
+                llm.generate, prompt=prompt, system_prompt=AIRA_SYSTEM_PROMPT, temperature=0.2,
+            )
             content = resp.content.strip() if resp and resp.content else ""
             if content and len(content) > 30:
                 synthesis, unverified_claims = validate_synthesis_claims(content, loaded_papers, matrix)

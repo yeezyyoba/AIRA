@@ -46,32 +46,19 @@ from tools.paper_reader import read_research_paper
 from tools.rag_retriever import retrieve_research_context
 from tools.result_analyzer import analyze_experimental_results
 from validation.schemas import PaperMetadataSchema, ResearchComparisonReportSchema
+from validation.evidence_validation import can_store_tool_output, injection_warnings, is_usable_extraction
+from validation.tool_validation import FAILED_EXTRACTION_STATUSES, status_value, validate_tool_output
+from meta_tools.ask_user import GENERIC_QUERY_TERMS, assess_request
+from meta_tools.critic import critique_research
+from meta_tools.finish import determine_stopping_reason
+from meta_tools.plan_updater import (
+    resolve_phase as _resolve_phase,
+    revise_plan_for_expanded_search,
+    update_plan_task as _update_plan_task,
+)
+from meta_tools.planner import build_research_plan
 
 logger = get_logger("agents.nodes")
-
-PHASES = (
-    "search_and_validate",
-    "extract_and_index",
-    "compare_and_analyze",
-    "identify_gaps",
-    "generate_citations",
-    "synthesize_report",
-)
-
-PHASE_DESCRIPTIONS = {
-    "search_and_validate": (
-        "Discover relevant academic papers and validate their metadata against scholarly registries."
-    ),
-    "extract_and_index": (
-        "Extract full text from accessible PDFs and index it for semantic retrieval."
-    ),
-    "compare_and_analyze": (
-        "Retrieve supporting passages, compare papers, analyze methodologies, and inspect reported metrics."
-    ),
-    "identify_gaps": "Identify evidence-supported limitations and research gaps.",
-    "generate_citations": "Generate bibliographic citations for the papers used.",
-    "synthesize_report": "Synthesize a report that distinguishes evidence from missing information.",
-}
 
 TOOL_PHASES = {
     "search_academic_papers": "search_and_validate",
@@ -93,28 +80,9 @@ ANALYSIS_ACTIONS = {
     "analyze_experimental_results": "experimental_results",
 }
 
-RESOLVED_STATUSES = {"COMPLETED", "BLOCKED", "SKIPPED", "FAILED"}
 USABLE_VALIDATION_STATUSES = {"VERIFIED", "PARTIALLY_VERIFIED", "UNVERIFIED"}
 VALIDATION_PRIORITY = {"VERIFIED": 0, "PARTIALLY_VERIFIED": 1, "UNVERIFIED": 2}
-FAILED_EXTRACTION_STATUSES = {"FAILED", "SCANNED_NEEDS_OCR"}
 
-# Requests that try to subvert the agent or ask for destructive / secret-leaking
-# actions are refused outright (the "unacceptable risk" stopping rule).
-RISK_PATTERN = re.compile(
-    r"(?i)("
-    r"ignore\s+(?:all\s+)?(?:previous|prior|above|your)\s+(?:instructions|rules|prompts?)"
-    r"|disregard\s+(?:all\s+)?(?:previous|prior|your)\s+(?:instructions|rules)"
-    r"|(?:reveal|print|show|leak|dump|exfiltrate)\s+(?:the\s+|your\s+)?(?:system\s+prompt|api[\s_-]*keys?|secrets?|passwords?|credentials|\.env)"
-    r"|override\s+(?:the\s+)?system\s+prompt"
-    r"|rm\s+-rf"
-    r"|drop\s+(?:table|database)"
-    r"|delete\s+(?:all\s+)?(?:files|the\s+database|everything)"
-    r"|fabricate\s+(?:citations?|results|data|references)"
-    r"|(?:invent|make\s+up)\s+(?:citations?|references|results)"
-    r")"
-)
-
-GENERIC_QUERY_TERMS = {"research", "papers", "paper", "study", "analysis", "compare", "review", "topic"}
 _STOPWORDS = {
     "a", "an", "the", "of", "on", "in", "for", "and", "or", "to", "with", "between",
     "about", "what", "which", "how", "are", "is", "do", "does", "compare", "comparison",
@@ -183,51 +151,10 @@ def _sanitize_data(obj):
     return obj
 
 
-def _status_value(raw: Any) -> str:
-    """Normalise a status that may be an Enum, a plain string, or missing."""
-    if raw is None:
-        return ""
-    return str(getattr(raw, "value", raw)).strip().upper()
-
-
-def _update_plan_task(plan, task_id, status, reason=None):
-    updated = []
-    found = False
-    for task in plan:
-        if not isinstance(task, dict):
-            task = {"task_id": str(task), "name": str(task), "description": "", "status": "PENDING"}
-        item = dict(task)
-        if item.get("task_id") == task_id:
-            item["status"] = status
-            found = True
-            if reason:
-                item["status_reason"] = reason
-            else:
-                item.pop("status_reason", None)
-        updated.append(item)
-    if not found:
-        updated.append({
-            "task_id": task_id,
-            "name": task_id.replace("_", " ").title(),
-            "description": PHASE_DESCRIPTIONS.get(task_id, ""),
-            "status": status,
-            **({"status_reason": reason} if reason else {}),
-        })
-    return updated
-
-
-def _resolve_phase(plan, completed, phase, status, reason):
-    """Resolve a phase while preserving whether it completed or was blocked."""
-    plan = _update_plan_task(plan, phase, status, reason)
-    if status in RESOLVED_STATUSES and phase not in completed:
-        completed.append(phase)
-    return plan, completed
-
-
-def _reopen_phase(plan, completed, phase, reason):
-    plan = _update_plan_task(plan, phase, "IN_PROGRESS", reason)
-    completed = [task for task in completed if task != phase]
-    return plan, completed
+# Status normalisation lives in validation.tool_validation; plan bookkeeping
+# (_update_plan_task, _resolve_phase, _reopen_phase) lives in
+# meta_tools.plan_updater. The aliases keep the node code readable.
+_status_value = status_value
 
 
 # ---------------------------------------------------------------------------
@@ -506,23 +433,8 @@ def analyze_goal(state: ResearchState) -> Dict[str, Any]:
 
 def check_information(state: ResearchState) -> Dict[str, Any]:
     """Stopping rules 'essential information missing' and 'unacceptable risk'."""
-    query = (state.get("query") or "").strip()
-    clarification = (state.get("clarification_response") or "").strip()
-    combined = f"{query} {clarification}".strip()
-    clean = re.sub(r"[^\w\s]", "", combined).strip()
-    missing, question, risks = [], None, []
-
-    risk_match = RISK_PATTERN.search(combined)
-    if risk_match:
-        risks.append(
-            f"Request contains an instruction the agent must not follow: '{risk_match.group(0)}'."
-        )
-    elif len(clean) < 4:
-        missing.append("A specific research topic is required.")
-        question = "Please provide the specific research topic or question."
-    elif clean.lower() in GENERIC_QUERY_TERMS:
-        missing.append("The research scope is too broad.")
-        question = "Which specific topic, models, datasets, or language should the research focus on?"
+    assessment = assess_request(state.get("query"), state.get("clarification_response"))
+    missing, question, risks = assessment["missing"], assessment["question"], assessment["risks"]
 
     step = state.get("step_count", 0) + 1
     logs = list(state.get("observable_logs", []))
@@ -567,54 +479,20 @@ def ask_user(state: ResearchState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def create_plan(state: ResearchState) -> Dict[str, Any]:
-    """Build the research plan and recognize evidence already in the state."""
-    plan = [{
-        "task_id": phase,
-        "name": phase.replace("_", " ").title(),
-        "description": PHASE_DESCRIPTIONS[phase],
-        "status": "PENDING",
-    } for phase in PHASES]
-
-    completed = [task for task in state.get("completed_tasks", []) if task in PHASES]
-    previous_statuses = dict(state.get("phase_statuses", {}))
-    statuses = {phase: previous_statuses.get(phase, "PENDING") for phase in PHASES}
-    reasons: Dict[str, str] = {}
-
+    """Build the research plan (meta-tool: planner) and log it."""
     validated = state.get("validated_papers", [])
-    discovered = state.get("discovered_papers", [])
     extracted = state.get("extracted_papers", [])
-    citations = state.get("citations", {})
-
     usable = _usable_validated(validated)
-    if usable and "search_and_validate" not in completed:
-        completed.append("search_and_validate")
-    if extracted and "extract_and_index" not in completed:
-        completed.append("extract_and_index")
 
-    # Tasks reported complete by the caller (resumption) must not stay PENDING.
-    for phase in completed:
-        if statuses.get(phase) not in RESOLVED_STATUSES:
-            statuses[phase] = "COMPLETED"
-            reasons[phase] = "Recognized from evidence already present in the session."
-
-    # Blocked phases from a previous run are retried after new information
-    # (e.g. a clarification) rather than being treated as permanently final.
-    if state.get("clarification_response"):
-        for phase, status in list(statuses.items()):
-            if status == "BLOCKED":
-                statuses[phase] = "PENDING"
-                completed = [task for task in completed if task != phase]
-
-    if not usable and discovered and statuses["search_and_validate"] == "PENDING":
-        statuses["search_and_validate"] = "IN_PROGRESS"
-
-    if citations and statuses["generate_citations"] == "PENDING":
-        statuses["generate_citations"] = "IN_PROGRESS"
-
-    for task in plan:
-        task["status"] = statuses[task["task_id"]]
-        if task["task_id"] in reasons:
-            task["status_reason"] = reasons[task["task_id"]]
+    plan, completed, statuses, _ = build_research_plan(
+        state.get("completed_tasks", []),
+        state.get("phase_statuses", {}),
+        has_usable_validated=bool(usable),
+        has_extracted=bool(extracted),
+        has_discovered=bool(state.get("discovered_papers", [])),
+        has_citations=bool(state.get("citations", {})),
+        clarification_received=bool(state.get("clarification_response")),
+    )
 
     step = state.get("step_count", 0) + 1
     logs = list(state.get("observable_logs", []))
@@ -1282,51 +1160,10 @@ def validate_tool_outputs(state: ResearchState) -> Dict[str, Any]:
 
     record = records[-1]
     tool, result, error = record.get("tool"), record.get("result"), record.get("error")
-    status, detail = "VALID", "Output structure is valid."
-    if error or record.get("status", "SUCCESS" if not error else "ERROR") != "SUCCESS":
-        status, detail = "ERROR", f"Tool execution failed: {error or 'unknown error'}"
-    elif result is None:
-        status, detail = "INVALID", "Tool returned null."
-    elif tool == "search_academic_papers":
-        if not isinstance(result, dict) or not isinstance(result.get("papers"), list):
-            status, detail = "INVALID", "Search response must contain a papers list."
-        elif not result["papers"]:
-            status, detail = "EMPTY", "Search ran but found no papers."
-    elif tool == "validate_metadata_integrity":
-        if not isinstance(result, dict) or not isinstance(result.get("records"), list):
-            status, detail = "INVALID", "Metadata validation must return a records list."
-        elif not result["records"]:
-            status, detail = "EMPTY", "No paper metadata records could be validated."
-        elif any(not isinstance(r, dict) or not r.get("paper_id") for r in result["records"]):
-            status, detail = "INVALID", "A validation record is missing its paper identity."
-    elif tool == "read_research_paper":
-        if not isinstance(result, dict) or not result.get("paper_id"):
-            status, detail = "INVALID", "Extraction result is missing paper_id."
-        else:
-            extraction_status = _status_value(result.get("status"))
-            if extraction_status in FAILED_EXTRACTION_STATUSES or not result.get("extracted_data"):
-                status, detail = "EMPTY", (
-                    "Paper extraction did not produce usable structured content "
-                    f"(status={extraction_status or 'unknown'})."
-                )
-    elif tool == "generate_citations":
-        if not isinstance(result, dict) or not isinstance(result.get("citations"), dict):
-            status, detail = "INVALID", "Citation generator returned no citation map."
-    elif tool in {"compare_research_papers", "identify_research_gaps", "retrieve_research_context"}:
-        if not isinstance(result, dict):
-            status, detail = "INVALID", f"{tool} must return a structured object."
-    elif tool == "analyze_research_methodology":
-        if not isinstance(result, dict) or not isinstance(result.get("analyses"), list):
-            status, detail = "INVALID", "Methodology analysis must return a list of analyses."
-    elif tool == "analyze_experimental_results":
-        if not isinstance(result, list):
-            status, detail = "INVALID", "Experimental analysis must return a list."
-        elif not result:
-            # A completed analysis that found no comparable metrics is a valid finding.
-            detail = "Analysis completed; no comparable experimental metrics were reported."
-    elif tool == "generate_research_comparison_report":
-        if not isinstance(result, dict) or not result.get("report_id"):
-            status, detail = "INVALID", "Report service returned no identifiable report object."
+    status, detail = validate_tool_output(
+        tool, result, error,
+        record_status=record.get("status", "SUCCESS" if not error else "ERROR"),
+    )
 
     logs.append(_log_event(
         state, "validate_tool_outputs",
@@ -1458,13 +1295,10 @@ def store_evidence(state: ResearchState) -> Dict[str, Any]:
     tool, result = record.get("tool"), record.get("result")
 
     # Failed or structurally invalid tool calls never alter evidence.
-    if record.get("error") or record.get("status") != "SUCCESS":
-        logs.append(_log_event(state, "store_evidence", f"Did not store output from failed tool '{tool}'.",
-                               tool=tool, outcome="SKIPPED", step=step))
-        return {"step_count": step, "observable_logs": logs}
-    if state.get("validation_status") in {"ERROR", "INVALID"}:
-        logs.append(_log_event(state, "store_evidence", f"Rejected structurally invalid output from '{tool}'.",
-                               tool=tool, outcome="REJECTED", step=step))
+    allowed, gate_outcome, gate_reason = can_store_tool_output(record, state.get("validation_status"))
+    if not allowed:
+        logs.append(_log_event(state, "store_evidence", gate_reason,
+                               tool=tool, outcome=gate_outcome, step=step))
         return {"step_count": step, "observable_logs": logs}
 
     completed = list(state.get("completed_tasks", []))
@@ -1531,20 +1365,15 @@ def store_evidence(state: ResearchState) -> Dict[str, Any]:
             "page_count": result.get("page_count") if isinstance(result, dict) else None,
             "warnings": (result.get("warnings") or [])[:10] if isinstance(result, dict) else [],
         })
-        usable = (
-            pid and isinstance(result, dict) and result.get("extracted_data")
-            and _status_value(result.get("status")) not in FAILED_EXTRACTION_STATUSES
-        )
+        usable = is_usable_extraction(result)
         if usable and pid not in extracted:
             extracted.append(pid)
         if not usable and pid:
             failed.add(f"extract:{pid}")
-        injection_warnings = [
-            w for w in (result.get("warnings") or []) if "injection" in str(w).lower()
-        ] if isinstance(result, dict) else []
-        if injection_warnings:
+        flagged = injection_warnings(result, limit=3)
+        if flagged:
             security_flags.append({"paper_id": pid, "type": "PROMPT_INJECTION_PATTERN",
-                                   "details": injection_warnings[:3]})
+                                   "details": flagged})
         indexing = record.get("indexing")
         if isinstance(indexing, dict):
             indexing_results.append(indexing)
@@ -1658,15 +1487,9 @@ def reflect_and_revise(state: ResearchState) -> Dict[str, Any]:
         outcome = "MAX_STEPS_REACHED"
     elif state.get("pending_revision"):
         revisions = state.get("plan_revisions", 0) + 1
-        reason = state["pending_revision"]
-        plan, completed = _reopen_phase(
-            plan, completed, "search_and_validate",
-            f"Plan revision {revisions}: {reason} Expanding the search for more open-access candidates.",
+        plan, completed, statuses, decision = revise_plan_for_expanded_search(
+            plan, completed, statuses, revisions, state["pending_revision"],
         )
-        statuses["search_and_validate"] = "IN_PROGRESS"
-        plan = _update_plan_task(plan, "extract_and_index", "PENDING", "Awaiting candidates from the expanded search.")
-        statuses["extract_and_index"] = "PENDING"
-        decision = f"PLAN REVISED ({revisions}): {reason} Re-opening search with a larger candidate pool."
         update.update({
             "research_plan": plan,
             "completed_tasks": completed,
@@ -1700,27 +1523,15 @@ def reflect_and_revise(state: ResearchState) -> Dict[str, Any]:
 
 
 def critique_findings(state: ResearchState) -> Dict[str, Any]:
+    """Review the gathered evidence (meta-tool: critic) and log the verdict."""
     extracted = state.get("extracted_papers", [])
-    statuses = state.get("phase_statuses", {})
-    completed = set(state.get("completed_tasks", []))
-    failed = set(state.get("failed_items", []))
-    required = {"search_and_validate", "extract_and_index", "compare_and_analyze", "identify_gaps", "generate_citations"}
-    missing = sorted(required - completed)
-    blocked = sorted(k for k, v in statuses.items() if v == "BLOCKED")
-    failed_actions = sorted(item for item in failed if item.startswith("action:"))
-
-    if not extracted:
-        verdict = "INSUFFICIENT_EVIDENCE"
-        reason = "No papers yielded usable extracted full-text evidence."
-    elif len(extracted) < 2:
-        verdict = "INSUFFICIENT_EVIDENCE"
-        reason = "Only one paper was extracted; comparative claims cannot be supported."
-    elif missing or blocked or failed_actions:
-        verdict = "NEEDS_REVISION"
-        reason = f"Research phases incomplete/blocked or analysis actions failed: {missing or blocked or failed_actions}."
-    else:
-        verdict = "APPROVED"
-        reason = "Required research phases ran; conclusions must remain bounded by the extracted evidence."
+    critique = critique_research(
+        extracted,
+        state.get("phase_statuses", {}),
+        state.get("completed_tasks", []),
+        state.get("failed_items", []),
+    )
+    verdict, reason = critique["verdict"], critique["reason"]
 
     step = state.get("step_count", 0) + 1
     logs = list(state.get("observable_logs", []))
@@ -1728,8 +1539,8 @@ def critique_findings(state: ResearchState) -> Dict[str, Any]:
         state, "critique_findings",
         f"Critique verdict: {verdict}. {reason}",
         outcome=verdict,
-        details={"extracted_papers": len(extracted), "missing_phases": missing,
-                 "blocked_phases": blocked, "failed_actions": failed_actions},
+        details={"extracted_papers": len(extracted), "missing_phases": critique["missing_phases"],
+                 "blocked_phases": critique["blocked_phases"], "failed_actions": critique["failed_actions"]},
         step=step,
     ))
     return {"critique_status": verdict, "step_count": step, "observable_logs": logs}
@@ -1878,13 +1689,7 @@ def finish_task(state: ResearchState) -> Dict[str, Any]:
     extracted = state.get("extracted_papers", [])
     critique = state.get("critique_status")
 
-    if not stopping or stopping in {"COMPLETED", "GOAL_ACHIEVED"}:
-        if critique == "APPROVED" and len(extracted) >= 2:
-            stopping = "GOAL_ACHIEVED"
-        elif critique == "INSUFFICIENT_EVIDENCE" or not extracted:
-            stopping = "INSUFFICIENT_EVIDENCE"
-        else:
-            stopping = "PARTIAL"
+    stopping = determine_stopping_reason(stopping, critique, len(extracted))
 
     logs = list(state.get("observable_logs", []))
     logs.append(_log_event(

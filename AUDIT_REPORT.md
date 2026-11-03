@@ -88,8 +88,12 @@ New tests: `tests/test_reliability.py` (29), `tests/test_prompt_injection.py` (1
 
 * Sessions live in LangGraph's in-memory checkpointer: a restart loses paused sessions
   (reports survive). A SQLite checkpointer needs `langgraph-checkpoint-sqlite`.
-* `memory/database.py`, `meta_tools/*`, `validation/*_validation.py` remain stubs; their
-  behaviour is implemented in the graph nodes.
+* ~~`memory/database.py`, `meta_tools/*`, `validation/*_validation.py` remain stubs.~~
+  Resolved: the meta-tools (planner, plan updater, ask user, critic, finish) and the
+  tool-output / evidence validators now live in `meta_tools/` and `validation/` as pure
+  functions called by the graph nodes; routing moved to `agents/routing.py`. Unused
+  placeholders (`memory/database.py`, `memory/repositories.py`,
+  `services/embedding_service.py`, `services/evidence_service.py`) were removed.
 * The risk filter is pattern-based; it can be bypassed by paraphrase. Retrieved content
   is still always treated as data.
 * Gap identification, metric extraction and **PDF section detection** are heuristic
