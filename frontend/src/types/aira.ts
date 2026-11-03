@@ -38,6 +38,7 @@ export interface ValidatedPaper {
   paper_id: string;
   doi?: string | null;
   explanation?: string;
+  original_metadata?: Partial<DiscoveredPaper>;
 }
 
 export interface EvidenceItem {
@@ -92,13 +93,26 @@ export interface ResearchGap {
   evidence_backing?: string;
 }
 
+/** A formatted citation as returned by the backend's citation generator. */
+export interface CitationEntry {
+  paper_id?: string;
+  style?: string;
+  citation_text?: string;
+  doi?: string | null;
+  verification_status?: string | null;
+}
+
+/** Older sessions stored plain strings; current ones store CitationEntry objects. */
+export type CitationValue = string | CitationEntry;
+
 export interface ReportReference {
   paper_id: string;
   title: string;
   authors?: string[];
   page_count?: number;
   citation?: string;
-  doi?: string;
+  citation_text?: string | null;
+  doi?: string | null;
 }
 
 export interface ResearchComparisonReport {
@@ -136,7 +150,7 @@ export interface ResearchResponse {
   extracted_papers?: string[];
   metric_comparisons?: MetricComparison[];
   identified_gaps?: ResearchGap[];
-  citations?: Record<string, string>;
+  citations?: Record<string, CitationValue>;
   is_degraded?: boolean;
 }
 

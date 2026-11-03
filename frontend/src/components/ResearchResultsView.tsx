@@ -20,7 +20,8 @@ import {
   DiscoveredPaper,
   ValidatedPaper,
   MetricComparison,
-  ResearchGap
+  ResearchGap,
+  CitationValue,
 } from "@/types/aira";
 import { airaApi } from "@/services/api";
 
@@ -31,7 +32,7 @@ interface ResearchResultsViewProps {
   extractedPapers?: string[];
   metrics?: MetricComparison[];
   gaps?: ResearchGap[];
-  citations?: Record<string, string>;
+  citations?: Record<string, CitationValue>;
   isDegraded?: boolean;
 }
 
@@ -47,6 +48,79 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<"report" | "papers" | "metrics" | "gaps" | "citations">("report");
   const [copiedCitation, setCopiedCitation] = useState<string | null>(null);
+
+  // Citations arrive either as plain strings (older sessions) or as objects
+  // from the citation generator. Rendering an object directly crashes React,
+  // so every entry is normalised to display text first.
+  const citationText = (value: CitationValue | null | undefined): string => {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    return value.citation_text || value.paper_id || "";
+  };
+
+  // Readable paper labels. Paper IDs are DOIs (e.g. 10.18653/v1/2023.semeval-1.44),
+  // which are hard to tell apart, so every view shows "First author et al., year"
+  // with the full title on hover, built from the metadata this session already has.
+  type PaperInfo = { title?: string; authors?: string[]; year?: number | null; doi?: string | null };
+  const paperInfo: Record<string, PaperInfo> = {};
+  const remember = (pid: string | undefined | null, info: PaperInfo) => {
+    if (!pid) return;
+    const prev = paperInfo[pid] || {};
+    paperInfo[pid] = {
+      title: prev.title || info.title,
+      authors: prev.authors && prev.authors.length ? prev.authors : info.authors,
+      year: prev.year ?? info.year,
+      doi: prev.doi || info.doi,
+    };
+  };
+  validatedPapers.forEach((v) => remember(v.paper_id, { ...(v.original_metadata || {}), doi: v.doi || v.original_metadata?.doi }));
+  discoveredPapers.forEach((d) => remember(d.paper_id || d.id || d.doi, d));
+  (report?.references || []).forEach((r) => remember(r.paper_id, { title: r.title, authors: r.authors, doi: r.doi }));
+
+  const lastName = (name: string) => {
+    const clean = name.trim();
+    if (clean.includes(",")) return clean.split(",")[0].trim();
+    const parts = clean.split(/\s+/);
+    return parts[parts.length - 1];
+  };
+
+  const paperLabel = (pid: string): string => {
+    const info = paperInfo[pid];
+    if (!info) return pid;
+    const authors = (info.authors || []).filter((a) => a && a.trim());
+    let who = "";
+    if (authors.length === 1) who = lastName(authors[0]);
+    else if (authors.length === 2) who = `${lastName(authors[0])} & ${lastName(authors[1])}`;
+    else if (authors.length > 2) who = `${lastName(authors[0])} et al.`;
+    if (who) return info.year ? `${who}, ${info.year}` : who;
+    if (info.title) return info.title.length > 48 ? `${info.title.slice(0, 45)}…` : info.title;
+    return pid;
+  };
+
+  const paperTitle = (pid: string): string => paperInfo[pid]?.title || pid;
+
+  /** Replace raw paper IDs inside backend-generated text (e.g. gap titles) with labels. */
+  const withLabels = (text: string | undefined, ids: string[] = []): string => {
+    let out = text || "";
+    ids.forEach((id) => {
+      if (id && out.includes(id)) out = out.split(id).join(paperLabel(id));
+    });
+    return out;
+  };
+
+  const citationRows: { pid: string; text: string; doi?: string | null; style?: string }[] =
+    Object.keys(citations || {}).length > 0
+      ? Object.entries(citations || {}).map(([pid, value]) => ({
+          pid,
+          text: citationText(value) || pid,
+          doi: typeof value === "string" ? null : value?.doi,
+          style: typeof value === "string" ? undefined : value?.style,
+        }))
+      : (report?.references || []).map((ref) => ({
+          pid: ref.paper_id,
+          text: ref.citation_text || ref.citation || ref.title || ref.paper_id,
+          doi: ref.doi,
+        }));
 
   const handleCopyCitation = async (text: string, id: string) => {
     try {
@@ -81,7 +155,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
     { id: "papers", label: "Corpus & Metadata", icon: Layers, count: discoveredPapers.length || extractedPapers.length },
     { id: "metrics", label: "Experimental Benchmarks", icon: Scale, count: metrics.length || (report?.metric_tables?.length || 0) },
     { id: "gaps", label: "Identified Research Gaps", icon: AlertCircle, count: gaps.length || (report?.research_gaps?.length || 0) },
-    { id: "citations", label: "Verifiable Citations", icon: Quote, count: Object.keys(citations).length || (report?.references?.length || 0) },
+    { id: "citations", label: "Verifiable Citations", icon: Quote, count: Object.keys(citations || {}).length || (report?.references?.length || 0) },
   ] as const;
 
   return (
@@ -457,8 +531,8 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                           {models.map((item, mIdx) => (
                             <div key={mIdx} className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 space-y-2">
                               <div className="flex items-center justify-between gap-2">
-                                <span className="text-xs font-bold text-white truncate">
-                                  {item.model_name || item.paper_id}
+                                <span className="text-xs font-bold text-white truncate" title={paperTitle(item.paper_id)}>
+                                  {item.model_name || paperLabel(item.paper_id)}
                                 </span>
                                 {item.rank !== undefined && (
                                   <span className="text-[10px] font-mono bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-bold">
@@ -479,7 +553,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                               </div>
 
                               <div className="text-[10px] text-slate-400 truncate border-t border-slate-900 pt-1.5">
-                                {item.dataset_name ? `${item.dataset_name}${item.dataset_split ? ` (${item.dataset_split})` : ""}` : `Paper: ${item.paper_id}`}
+                                {paperLabel(item.paper_id)}{item.dataset_name ? ` · ${item.dataset_name}${item.dataset_split ? ` (${item.dataset_split})` : ""}` : ""}
                               </div>
                             </div>
                           ))}
@@ -488,7 +562,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                           {Object.entries(m.paper_values).map(([pid, val]: [string, unknown]) => (
                             <div key={pid} className="bg-slate-950 p-3 rounded-xl border border-slate-800">
-                              <span className="text-[10px] font-mono text-slate-400 block truncate">{pid}</span>
+                              <span className="text-[10px] font-mono text-slate-400 block truncate" title={paperTitle(pid)}>{paperLabel(pid)}</span>
                               <span className="text-base font-bold text-slate-100 font-mono">{String(val)}</span>
                             </div>
                           ))}
@@ -553,8 +627,8 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                           <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400">
                             <span>Corpus:</span>
                             {g.supporting_papers.map((p) => (
-                              <span key={p} className="bg-slate-900 border border-slate-800 px-2 py-0.5 rounded text-slate-300">
-                                {p}
+                              <span key={p} title={paperTitle(p)} className="bg-slate-900 border border-slate-800 px-2 py-0.5 rounded text-slate-300">
+                                {paperLabel(p)}
                               </span>
                             ))}
                           </div>
@@ -563,7 +637,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
 
                       {g.title && (
                         <h4 className="text-sm font-bold text-white tracking-tight">
-                          {g.title}
+                          {withLabels(g.title, g.supporting_papers || [])}
                         </h4>
                       )}
 
@@ -584,7 +658,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                                   &ldquo;{ev.passage}&rdquo;
                                 </p>
                                 <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 pt-0.5 border-t border-slate-800/60">
-                                  <span className="text-emerald-400 font-semibold">{ev.paper_id}</span>
+                                  <span className="text-emerald-400 font-semibold" title={paperTitle(ev.paper_id)}>{paperLabel(ev.paper_id)}</span>
                                   {ev.page_number && <span>• Page {ev.page_number}</span>}
                                   {ev.section_heading && <span className="truncate">• {ev.section_heading}</span>}
                                   <span className="ml-auto text-[9px] bg-slate-950 px-2 py-0.5 rounded border border-slate-800 text-slate-400">
@@ -622,22 +696,35 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
               </p>
             </div>
 
-            {Object.keys(citations).length === 0 && (!report?.references || report.references.length === 0) ? (
+            {citationRows.length === 0 ? (
               <div className="text-center py-16 bg-slate-950/40 rounded-2xl border border-slate-800/60 text-slate-500">
                 <Quote className="w-8 h-8 mx-auto mb-2 opacity-30 text-purple-400" />
                 <p className="text-sm text-slate-400">No citations compiled for this session yet.</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {Object.entries(citations).map(([pid, citText]) => (
+                {citationRows.map(({ pid, text, doi, style }) => (
                   <div key={pid} className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-start justify-between gap-4 hover:border-slate-700 transition-colors">
-                    <div className="space-y-1">
-                      <span className="text-[10px] font-mono text-indigo-400 font-bold block">{pid}</span>
-                      <p className="text-xs text-slate-200 font-serif leading-relaxed">{citText}</p>
+                    <div className="space-y-1 min-w-0">
+                      <p className="text-sm font-semibold text-white leading-snug">{paperTitle(pid)}</p>
+                      <span className="text-[10px] font-mono text-indigo-400 font-bold block">
+                        {paperLabel(pid)}{style ? ` · ${style}` : ""}
+                      </span>
+                      <p className="text-xs text-slate-300 font-serif leading-relaxed break-words">{text}</p>
+                      {doi && (
+                        <a
+                          href={`https://doi.org/${doi}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] text-sky-400 hover:underline break-all"
+                        >
+                          https://doi.org/{doi}
+                        </a>
+                      )}
                     </div>
 
                     <button
-                      onClick={() => handleCopyCitation(citText, pid)}
+                      onClick={() => handleCopyCitation(text, pid)}
                       className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white transition-all shrink-0 border border-slate-800"
                       title="Copy Citation"
                     >
