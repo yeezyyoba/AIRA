@@ -17,7 +17,9 @@ Key capabilities include:
 - Research retrieval using ChromaDB.
 - Experimental result analysis and paper comparison.
 - APA 7, IEEE, and BibTeX citation generation.
-- LLM provider fallback and deterministic degraded mode.
+- Hybrid tool selection: the LLM proposes the next tool call with native function calling, and code validates it before anything runs.
+- LLM provider fallback, rate-limit cooldowns, and deterministic degraded mode.
+- Per-session API usage reporting (LLM, embeddings, academic APIs) in the API and the UI.
 - A Next.js and React frontend.
 - An offline evaluation suite covering six evaluation areas.
 
@@ -25,106 +27,182 @@ Key capabilities include:
 
 ## 1. Architecture
 
-AIRA uses a stateful agent workflow. LangGraph manages research state, planning, tool selection, execution, validation, reflection, and report generation.
+### 1.1 Agent pattern
+
+AIRA is a **plan-and-execute agent with reflection and self-correction**, built as a LangGraph `StateGraph`:
+
+* **Plan:** a planner meta-tool turns the request into a six-phase research plan (search & validate → extract & index → compare & analyse (incl. RAG retrieval) → identify gaps → cite → synthesise report).
+* **Execute:** each loop picks one tool. The rules list the legal options for the current phase, the LLM proposes one via **function calling**, and code validates the proposal ("the model proposes, the code disposes").
+* **Observe and validate:** every tool output is validated before it can enter the state as evidence.
+* **Reflect and correct:** failures go to a bounded retry handler, reflection can revise the plan (e.g. expand the search), and a critic decides whether the evidence supports the goal or another loop is needed.
+* **Stop:** explicit stopping rules (section 1.5) always end the graph.
+
+### 1.2 Architecture diagram (planner → tools → memory → validation → decision)
 
 ```mermaid
-flowchart TD
-    U[User] --> F[Next.js Frontend]
-    F --> API[FastAPI Backend]
-    API --> G[LangGraph Agent]
+flowchart LR
+    U([User request]) --> CHK{Check information<br/>scope · risk · missing info}
+    CHK -- missing / too broad --> ASK[Ask user<br/>pause & resume]
+    CHK -- off-topic / risky --> STOP([Stop: OUT_OF_SCOPE /<br/>UNACCEPTABLE_RISK])
 
-    G --> P[Planning and Tool Selection]
-    P --> S[Research State]
-    S <--> L[LLM Router]
+    subgraph PLANNER[1 · Planner]
+        PLAN[Create plan<br/>6 research phases]
+        SEL[Select tools<br/>legal options + rule choice]
+        PROP[LLM proposes call<br/>function calling, validated]
+    end
 
-    L --> GM[Google Gemini]
-    L -. Fallback .-> GR[Groq]
+    subgraph TOOLS[2 · Tools]
+        T[Search · Metadata validation · PDF reader<br/>RAG retrieval · Compare · Methodology<br/>Results analysis · Gaps · Citations · Report]
+    end
 
-    S --> T1[Academic Paper Search]
-    S --> T2[PDF Reading]
-    S --> T3[RAG Retrieval]
-    S --> T4[Result Analysis]
-    S --> T5[Metadata Validation]
-    S --> T6[File Management]
-    S --> T7[Citation Generation]
+    subgraph MEMORY[3 · Memory]
+        ST[(Research state<br/>LangGraph checkpoint)]
+        VS[(ChromaDB<br/>paper chunks)]
+        FS[(JSON papers<br/>& reports)]
+    end
 
-    T1 --> V[Output Validation]
-    T2 --> V
-    T3 --> V
-    T4 --> V
-    T5 --> V
-    T6 --> V
-    T7 --> V
+    subgraph VALID[4 · Validation]
+        V{Validate tool output<br/>VALID · EMPTY · INVALID · ERROR}
+        R[Retry handler<br/>max 2 per tool/item]
+    end
 
-    V --> R[Reflection and Critique]
-    R --> D[Research Report]
+    subgraph DECIDE[5 · Decision]
+        REF[Reflect & revise plan]
+        CRIT{Critic<br/>APPROVED / NEEDS_REVISION /<br/>INSUFFICIENT_EVIDENCE}
+        REP[Generate cited report]
+        FIN([Finish: stopping reason])
+    end
 
-    API <--> DB[(JSON paper & report files)]
-    API <--> CH[(ChromaDB)]
-    G -. In-process checkpoints .-> MS[LangGraph MemorySaver]
+    ASK --> FIN
+    CHK -- clear --> PLAN --> SEL --> PROP --> T
+    T --> V
+    V -- INVALID / ERROR --> R
+    R -- retry --> T
+    R -- gave up --> REF
+    V -- VALID / EMPTY --> ST
+    T <--> VS
+    T <--> FS
+    ST --> REF
+    REF -- phases left --> SEL
+    REF -- all phases done / budget spent --> CRIT
+    CRIT -- needs revision --> SEL
+    CRIT -- approved / stop --> REP --> FIN
 ```
 
-### Agent workflow
+The full component view (frontend, API, LLM router, storage) is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-The agent can:
+### 1.3 Workflow (LangGraph nodes)
 
-1. Receive and interpret a research request.
-2. Identify missing information and ask the user for clarification.
-3. Create and revise a research plan.
-4. Select tools based on the current task.
-5. Execute tools and validate their outputs.
-6. Retry failed operations with corrected inputs, within configured limits.
-7. Store relevant evidence and reflect on findings.
-8. Critique results and generate a final research report.
+| Node | What it does | Next |
+| --- | --- | --- |
+| `receive_request`, `analyze_goal` | Normalise the query, derive goal, domain and search query | `check_information` |
+| `check_information` | Scope check, risk check, missing-information check | `ask_user`, `finish_task` (refusal) or `create_plan` |
+| `ask_user` | Pause with a clarification question; the session resumes with the answer | `finish_task` (paused) |
+| `create_plan` | Planner meta-tool builds the phase plan | `select_tools` |
+| `select_tools` | Lists the legal tool calls for the current phase; the first is the rule choice | `propose_tool_call` (LLM mode), `execute_tools` (rules mode) or `reflect_and_revise` |
+| `propose_tool_call` | LLM proposes one call via function calling; code validates tool, arguments, ids and limits, else uses the rule choice | `execute_tools` |
+| `execute_tools` | Runs the chosen tool | `validate_tool_outputs` |
+| `validate_tool_outputs` | VALID / EMPTY / INVALID / ERROR | `retry_handler` or `store_evidence` |
+| `retry_handler` | Bounded retry with corrected inputs | `execute_tools` or `reflect_and_revise` |
+| `store_evidence` | Admits validated output to the state; updates phase status | `reflect_and_revise` |
+| `reflect_and_revise` | Explains progress; may revise the plan (e.g. expand the search) | `select_tools` (loop) or `critique_findings` |
+| `critique_findings` | Critic checks the evidence against the goal | `select_tools` (revision loop) or `generate_report` |
+| `generate_report`, `finish_task` | Cited report; final stopping reason | end |
 
-The workflow supports conditional routing and adaptive decisions rather than relying on a fixed sequence of operations.
+Every node appends a log entry with its decision and a one-line reason (`observable_logs`), shown live in the UI.
 
-### LLM routing and degraded mode
+### 1.4 State
 
-AIRA supports two language-model providers:
+The agent's memory for a run is a typed `ResearchState` (`agents/state.py`), checkpointed by LangGraph per session so a paused session can resume:
 
-| Provider      | Role     | Default model         |
-| ------------- | -------- | --------------------- |
-| Google Gemini | Primary  | `gemini-3.8-flash`    |
-| Groq          | Fallback | `openai/gpt-oss-120b` |
+| Group | Fields (main ones) |
+| --- | --- |
+| Request | `query`, `research_goal`, `search_query`, `domain`, `year_from`/`year_to`, `max_results` |
+| Plan & control | `research_plan`, `completed_tasks`, `current_task`, `phase_statuses`, `step_count`/`max_steps`, `stopping_reason` |
+| Tool selection | `tool_options`, `selected_tool`, `tool_inputs`, `tool_selection`, `tool_selection_stats`, `llm_proposals_paused` |
+| Retries & dedup | `retry_counts`, `failed_items`, `executed_tool_signatures`, `successful_tool_signatures` |
+| Evidence | `discovered_papers`, `validated_papers`, `extracted_papers`, `indexed_papers`, `retrieved_evidence`, `metric_comparisons`, `methodology_analyses`, `paper_comparisons`, `identified_gaps`, `citations` |
+| Reflection | `reflections`, `plan_revisions`, `critique_status`, `observable_logs` |
+| Safety & clarification | `risk_flags`, `security_flags`, `missing_information`, `clarification_question`, `user_message` |
 
-When the primary provider encounters quota exhaustion, authentication errors, or service failures, the router can switch to the fallback provider.
+Long-term memory outside the state: extracted papers as JSON (`data/processed/`), their chunks in ChromaDB (`data/chroma/`), and reports in `data/reports/`.
 
-If both providers are unavailable, AIRA enters degraded mode. LLM-dependent reasoning may be unavailable, but supported deterministic operations can continue without requiring an LLM response.
+### 1.5 Stopping rules
+
+The graph always terminates with one of these statuses:
+
+| Status | When |
+| --- | --- |
+| `GOAL_ACHIEVED` | The critic approves and at least two papers were extracted |
+| `PARTIAL` | Some evidence was gathered but the critic did not approve it |
+| `INSUFFICIENT_EVIDENCE` | No paper could be extracted, or the critic found the evidence insufficient |
+| `USER_CLARIFICATION_REQUIRED` | Essential information is missing or the topic is too broad; the run pauses until the user answers |
+| `UNACCEPTABLE_RISK` | The request tries to override instructions, asks for secrets or destructive actions, or asks to fabricate evidence; no tool runs |
+| `OUT_OF_SCOPE` | The request is not about language research (e.g. football results); no tool runs |
+| `MAX_STEPS_REACHED` | The step budget (`MAX_AGENT_STEPS`, default 150 node executions) is spent; a bounded partial report is written |
+
+### 1.6 Retries
+
+* At most **`MAX_RETRIES` = 2** retries, counted per tool **and** per item (one failing PDF does not use up the retries of another).
+* Only transient failures are retried (timeouts, network errors, HTTP 5xx, 408, 429). Permanent failures (HTTP 404, "not a valid PDF") are recorded once and skipped.
+* An empty first search is retried with a reformulated query; after the retries are spent the agent moves on and reflects instead of looping.
+* Identical calls that already succeeded are never repeated (tool signatures are deduplicated).
+
+### 1.7 Fallbacks
+
+| Situation | Fallback |
+| --- | --- |
+| LLM tool proposal invalid (unknown/illegal tool, bad arguments, URL injection, out-of-scope query) | Code rejects it and uses the rule-based choice |
+| LLM proposal times out or the provider fails | Rule-based choice; after 2 consecutive failures, LLM proposals pause for the rest of the run |
+| Gemini fails (quota, 429, 503, timeout) | Groq (`openai/gpt-oss-120b`) |
+| A provider returns 429 / 503 | It is paused for its own "retry in N s" hint (max 30 s) and requests go to the other provider |
+| Both LLM providers down | **Degraded mode**: deterministic tools (search, PDF extraction, DOI validation, metrics, citations) continue; reasoning steps use rules |
+| Semantic Scholar rate limit | Requests are spaced 1.1 s apart; Semantic Scholar is skipped when Crossref and OpenAlex already agree |
+| PDF link is a landing page | Direct PDF links (`.pdf`, arXiv, ACL Anthology) are tried first |
+| Report generation fails | A clearly labelled `PARTIAL` report that states what is unknown |
+
+| Provider | Role | Default model |
+| --- | --- | --- |
+| Google Gemini | Primary | `gemini-3.8-flash` |
+| Groq | Fallback | `openai/gpt-oss-120b` |
 
 ---
 
 ## 2. Research Tools
 
-AIRA provides seven execution tools:
+### 2.1 Execution tools
 
-| Tool                  | Purpose                                                |
-| --------------------- | ------------------------------------------------------ |
-| Academic Paper Search | Searches OpenAlex, Semantic Scholar, and Crossref      |
-| PDF Reading           | Extracts text and sections from research papers        |
-| RAG Retrieval         | Retrieves relevant research passages using ChromaDB    |
-| Result Analysis       | Analyzes and compares experimental metrics             |
-| Metadata Validation   | Cross-checks paper metadata across academic registries |
-| File Management       | Organizes research files and generated content         |
-| Citation Generation   | Generates APA 7, IEEE, and BibTeX citations            |
+Ten execution tools, each with a function-calling spec (name, when-to-use description, JSON schema) in `agents/tool_calling.py`:
 
-### Meta-tools
+| Tool | Category (assignment) | Purpose |
+| --- | --- | --- |
+| `search_academic_papers` | Search | OpenAlex, Semantic Scholar and Crossref, merged and deduplicated |
+| `validate_metadata_integrity` | Function calling | Cross-checks title, authors, year and DOI across registries (VERIFIED needs two) |
+| `read_research_paper` | System & environment | Downloads (SSRF-protected) and extracts PDF text and sections |
+| `retrieve_research_context` | RAG | Retrieves passages with page citations from ChromaDB |
+| `compare_research_papers` | Code & compute | Compares objectives, datasets, models across papers |
+| `analyze_research_methodology` | Code & compute | Extracts and compares methodologies |
+| `analyze_experimental_results` | Code & compute | Extracts metrics (accuracy, F1, BLEU, WER, …) and compares compatible results |
+| `identify_research_gaps` | Code & compute | Author-acknowledged limitations and gaps |
+| `generate_citations` | Code & compute | APA 7, IEEE and BibTeX from validated metadata, never invented fields |
+| `generate_research_comparison_report` | System & environment | Builds and saves the cited report (file manager) |
 
-Meta-tools act on the agent's own process rather than the outside world. Each one is a plain function in `meta_tools/`; the LangGraph node that uses it (in `agents/nodes.py`) only logs the decision and updates the state.
+### 2.2 Meta-tools
 
-| Meta-tool    | File                         | Used by node(s)                         | What it decides                                                                 |
-| ------------ | ---------------------------- | --------------------------------------- | ------------------------------------------------------------------------------- |
-| Planner      | `meta_tools/planner.py`      | `create_plan`                           | The six-phase research plan; recognizes work already done on resumed sessions   |
-| Plan updater | `meta_tools/plan_updater.py` | `store_evidence`, `reflect_and_revise`  | Checks off, blocks or re-opens phases; revises the plan to expand the search    |
-| Ask user     | `meta_tools/ask_user.py`     | `check_information`, `ask_user`         | Whether the topic is missing or too broad, or the request is an unacceptable risk |
-| Critic       | `meta_tools/critic.py`       | `critique_findings`                     | APPROVED, NEEDS_REVISION or INSUFFICIENT_EVIDENCE                               |
-| Finish       | `meta_tools/finish.py`       | `finish_task`                           | The final stopping reason (GOAL_ACHIEVED, PARTIAL, INSUFFICIENT_EVIDENCE, …)    |
+Meta-tools act on the agent's own process rather than the outside world. Each one is a plain function in `meta_tools/` or `agents/`; the LangGraph node that uses it only logs the decision and updates the state.
 
-Tool selection (choosing the next execution tool from the plan) is done by the `select_tools` node.
+| Meta-tool | File | Used by node(s) | What it decides |
+| --- | --- | --- | --- |
+| Planner | `meta_tools/planner.py` | `create_plan` | The six-phase research plan; recognizes work already done on resumed sessions |
+| Plan updater | `meta_tools/plan_updater.py` | `store_evidence`, `reflect_and_revise` | Checks off, blocks or re-opens phases; revises the plan to expand the search |
+| Ask user | `meta_tools/ask_user.py` | `check_information`, `ask_user` | Whether the topic is missing or too broad, out of scope, or an unacceptable risk |
+| Tool selection | `agents/tool_calling.py` | `select_tools`, `propose_tool_call` | Legal next calls, the LLM's proposal, and whether code accepts it |
+| Critic | `meta_tools/critic.py` | `critique_findings` | APPROVED, NEEDS_REVISION or INSUFFICIENT_EVIDENCE |
+| Finish | `meta_tools/finish.py` | `finish_task` | The final stopping reason |
 
-### Validation
+### 2.3 Validation and evidence
 
-Every tool output is checked by `validation/tool_validation.py` (VALID, EMPTY, INVALID or ERROR) before the agent trusts it; INVALID and ERROR route to the retry handler. `validation/evidence_validation.py` decides what may enter the research state as evidence (no output from failed calls, no unusable extractions) and flags prompt-injection text found inside papers.
+Every tool output is checked by `validation/tool_validation.py` (VALID, EMPTY, INVALID or ERROR) before the agent trusts it; INVALID and ERROR route to the retry handler. `validation/evidence_validation.py` decides what may enter the research state as evidence (no output from failed calls, no unusable extractions) and flags prompt-injection text found inside papers. Report conclusions cite the paper and page they come from, and references use registry-verified metadata.
 
 ---
 
@@ -363,16 +441,18 @@ For the six evaluated questions:
 
 ### 8.3 Automated testing
 
-The last recorded full backend regression suite completed with:
+The last recorded full backend regression suite (3 Nov 2026) completed with:
 
-**246 tests passed** (Python 3.11 and 3.13), run with `python -m pytest tests`.
+**447 tests passed** (Python 3.11), run with `python -m pytest tests`. This includes 18 end-to-end
+graph scenarios (`tests/test_graph.py`), the LLM function-calling tests (`tests/test_tool_calling.py`)
+and the rate-limit and API-usage tests (`tests/test_rate_limits.py`).
 
 `tests/conftest.py` isolates every test run: API keys are blanked, embeddings are
 mocked, data directories point to a temporary folder, and outbound network
 connections are refused. Tests therefore never call Gemini, Groq, academic APIs,
 or PDF hosts, and never modify `data/` or the committed evaluation report.
 
-The frontend production build also completed successfully during Phase 8 verification.
+The frontend type-checks (`tsc --noEmit`) and the production build (`next build`) completed successfully on 3 Nov 2026.
 
 These are recorded verification results, not a claim that every subsequent change has been retested.
 
@@ -385,6 +465,9 @@ evaluation/evaluation_report.md
 ```
 
 It includes benchmark descriptions, metric definitions, results, failure analysis, limitations, and recommendations.
+
+The one-page evaluation (success rate, failures, limitations, improvements, agentic behaviour shown) is
+[`evaluation/ONE_PAGE_SUMMARY.md`](evaluation/ONE_PAGE_SUMMARY.md).
 
 ---
 

@@ -10,13 +10,77 @@ The system combines:
 - A FastAPI backend for application services and API access.
 - LangGraph for stateful agent orchestration.
 - Gemini and Groq for language-model reasoning and fallback.
-- Seven research execution tools.
+- Ten research execution tools, chosen by LLM function calling and validated by code.
 - ChromaDB for vector-based research retrieval.
 - Local JSON files for extracted papers and generated reports (SQLite is configured but not yet used).
 
 The architecture separates user interaction, agent orchestration, research tools, and data storage.
 
-## 2. High-Level Architecture
+## 2. Agent Loop: planner → tools → memory → validation → decision
+
+This is the agent's control loop as implemented in `agents/graph.py` and `agents/routing.py`.
+Each box is a LangGraph node (or a store it reads and writes); each labelled arrow is a
+conditional edge.
+
+```mermaid
+flowchart LR
+    U([User request]) --> CHK{Check information<br/>scope · risk · missing info}
+    CHK -- missing / too broad --> ASK[Ask user<br/>pause & resume]
+    CHK -- off-topic / risky --> STOP([Stop: OUT_OF_SCOPE /<br/>UNACCEPTABLE_RISK])
+
+    subgraph PLANNER[1 · Planner]
+        PLAN[Create plan<br/>6 research phases]
+        SEL[Select tools<br/>legal options + rule choice]
+        PROP[LLM proposes call<br/>function calling, validated]
+    end
+
+    subgraph TOOLS[2 · Tools]
+        T[Search · Metadata validation · PDF reader<br/>RAG retrieval · Compare · Methodology<br/>Results analysis · Gaps · Citations · Report]
+    end
+
+    subgraph MEMORY[3 · Memory]
+        ST[(Research state<br/>LangGraph checkpoint)]
+        VS[(ChromaDB<br/>paper chunks)]
+        FS[(JSON papers<br/>& reports)]
+    end
+
+    subgraph VALID[4 · Validation]
+        V{Validate tool output<br/>VALID · EMPTY · INVALID · ERROR}
+        R[Retry handler<br/>max 2 per tool/item]
+    end
+
+    subgraph DECIDE[5 · Decision]
+        REF[Reflect & revise plan]
+        CRIT{Critic<br/>APPROVED / NEEDS_REVISION /<br/>INSUFFICIENT_EVIDENCE}
+        REP[Generate cited report]
+        FIN([Finish: stopping reason])
+    end
+
+    ASK --> FIN
+    CHK -- clear --> PLAN --> SEL --> PROP --> T
+    T --> V
+    V -- INVALID / ERROR --> R
+    R -- retry --> T
+    R -- gave up --> REF
+    V -- VALID / EMPTY --> ST
+    T <--> VS
+    T <--> FS
+    ST --> REF
+    REF -- phases left --> SEL
+    REF -- all phases done / budget spent --> CRIT
+    CRIT -- needs revision --> SEL
+    CRIT -- approved / stop --> REP --> FIN
+```
+
+| Stage | Nodes / components | Role |
+| --- | --- | --- |
+| 1 · Planner | `create_plan`, `select_tools`, `propose_tool_call` | Phase plan; legal next calls; LLM proposal validated by code |
+| 2 · Tools | `execute_tools` + 10 execution tools | Search, validation, PDF, RAG, analysis, citations, report |
+| 3 · Memory | `ResearchState` (LangGraph checkpoint), ChromaDB, JSON files | Run state and evidence; paper chunks; papers and reports |
+| 4 · Validation | `validate_tool_outputs`, `retry_handler`, `store_evidence` | VALID/EMPTY/INVALID/ERROR; at most 2 retries; only valid output becomes evidence |
+| 5 · Decision | `reflect_and_revise`, `critique_findings`, `generate_report`, `finish_task` | Loop, revise the plan, or stop with an explicit stopping reason |
+
+## 2b. High-Level Architecture (components)
 
 ```mermaid
 flowchart TD
@@ -120,7 +184,9 @@ The model router manages language-model access.
 - Groq is the fallback provider.
 - Provider errors are classified and handled using bounded retry and fallback policies.
 - When both providers are unavailable, the system can enter degraded mode.
-- `ModelRouter.generate_tool_call` provides native function calling (Gemini function declarations, Groq tools) with the same retry, fallback and degraded-mode handling. A response without a tool call, or with malformed arguments, counts as an invalid response.
+- `ModelRouter.generate_tool_call` provides native function calling (Gemini function declarations, Groq tools). A response without a tool call, or with malformed arguments, counts as an invalid response. Tool proposals are single-shot with a time budget: one attempt per provider, the remaining budget as the HTTP timeout, and no fallback once the budget is spent.
+- Rate limits: a 429 or 503 is not retried against the same provider. The provider is paused for its own "retry in N s" hint (capped at 30 s) and requests go to the other provider; when every provider is paused the call fails fast instead of entering degraded mode.
+- Every request is counted per session (`api_usage` in the API response, API Usage panel in the UI).
 
 In degraded mode, supported deterministic operations remain available even when LLM reasoning is unavailable.
 
@@ -201,8 +267,10 @@ The workflow can branch, retry, or request additional information instead of fol
 
 AIRA uses several mechanisms to improve reliability:
 
-- Bounded retries for supported transient failures.
-- Fallback between LLM providers.
+- Bounded retries for supported transient failures (max 2 per tool and item).
+- Fallback between LLM providers, with per-provider cooldowns after rate limits.
+- Rule-based fallback for every LLM tool proposal, and a circuit breaker that pauses proposals after 2 consecutive failures.
+- Semantic Scholar request pacing (1.1 s) and skipping it when Crossref and OpenAlex already agree.
 - Validation of tool outputs.
 - Academic metadata cross-checking.
 - PDF extraction error handling.
