@@ -6,6 +6,7 @@ import { DashboardView } from "@/components/DashboardView";
 import { ResearchQueryInput } from "@/components/ResearchQueryInput";
 import { ClarificationBanner } from "@/components/ClarificationBanner";
 import { ExecutionProgress } from "@/components/ExecutionProgress";
+import { ApiUsagePanel } from "@/components/ApiUsagePanel";
 import { ResearchResultsView } from "@/components/ResearchResultsView";
 import { ReportsView, type ReportSummary } from "@/components/ReportsView";
 import { RepositoryView } from "@/components/RepositoryView";
@@ -387,6 +388,15 @@ export default function Home() {
                 plan={currentSession.plan}
                 logs={currentSession.observable_logs}
                 status={currentSession.status}
+              />
+            )}
+
+            {/* External API usage of this session (refreshes with each status poll) */}
+            {currentSession && (
+              <ApiUsagePanel
+                usage={currentSession.api_usage}
+                toolStats={currentSession.tool_selection_stats}
+                isRunning={isRunning}
               />
             )}
 

@@ -206,19 +206,63 @@ def _record_key(record) -> Optional[str]:
     return _paper_key(_original_metadata(record))
 
 
+_ARXIV_ABS = re.compile(r"^https?://(?:www\.)?arxiv\.org/abs/(?P<id>[^?#]+?)/?$", re.IGNORECASE)
+_ACL_PAGE = re.compile(r"^https?://(?:www\.)?aclanthology\.org/(?P<id>[A-Za-z0-9][\w.\-]*?)/?$", re.IGNORECASE)
+
+
+def _pdf_link_rank(url: str) -> int:
+    """Lower is better: direct PDF files first, DOI landing pages last.
+
+    doi.org links resolve to publisher landing pages (HTML, often a 202 or a
+    bot check), so they are the least likely to yield a PDF.
+    """
+    lowered = url.lower().split("?", 1)[0].split("#", 1)[0]
+    if lowered.endswith(".pdf") or "arxiv.org/pdf/" in lowered or "openreview.net/pdf" in lowered:
+        return 0
+    if re.match(r"^https?://(dx\.)?doi\.org/", lowered):
+        return 3
+    if "/pdf" in lowered:
+        return 1
+    return 2
+
+
+def _derived_pdf_links(url: str) -> List[str]:
+    """Well-known, deterministic PDF addresses for an abstract page (arXiv, ACL Anthology)."""
+    match = _ARXIV_ABS.match(url)
+    if match:
+        return [f"https://arxiv.org/pdf/{match.group('id')}"]
+    match = _ACL_PAGE.match(url)
+    if match and not match.group("id").lower().endswith(".pdf"):
+        return [f"https://aclanthology.org/{match.group('id')}.pdf"]
+    return []
+
+
 def _pdf_url(record):
     metadata = _original_metadata(record)
-    candidates = [metadata.get("pdf_url"), metadata.get("open_access_url")]
+    candidates = [metadata.get("pdf_url"), metadata.get("open_access_url"), metadata.get("url")]
     provider_metadata = metadata.get("provider_metadata") or {}
     if isinstance(provider_metadata, dict):
         for provider in ("semantic_scholar", "openalex", "crossref"):
             item = provider_metadata.get(provider) or {}
             if isinstance(item, dict):
                 candidates.extend([item.get("pdf_url"), item.get("open_access_url")])
+    links: List[str] = []
     for candidate in candidates:
         if isinstance(candidate, str) and candidate.startswith(("https://", "http://")):
-            return candidate
-    return None
+            for link in [candidate, *_derived_pdf_links(candidate)]:
+                if link not in links:
+                    links.append(link)
+    # metadata["url"] is only a candidate when it is (or derives) a direct PDF:
+    # a bare landing page there was never offered as an open-access copy.
+    landing = metadata.get("url")
+    usable = [
+        link for link in links
+        if link != landing or _pdf_link_rank(link) == 0
+    ]
+    if not usable:
+        return None
+    # Stable sort: equal-ranked links keep the providers' order.
+    return sorted(usable, key=_pdf_link_rank)[0]
 
 
 def _validation_usable(record):
@@ -383,6 +427,8 @@ def receive_request(state: ResearchState) -> Dict[str, Any]:
         "tool_options": [],
         "tool_selection": None,
         "tool_selection_stats": {},
+        "tool_selection_failures": 0,
+        "llm_proposals_paused": False,
         "security_flags": list(state.get("security_flags", [])),
         "observable_logs": logs,
         "is_degraded": False,
@@ -857,6 +903,12 @@ def select_tools(state: ResearchState) -> Dict[str, Any]:
     }
 
 
+def _short_error(exc: Exception, limit: int = 160) -> str:
+    """One-line, length-limited error text for logs (provider messages can be huge)."""
+    text = " ".join(str(exc).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _search_scope_problem(query: str) -> Optional[str]:
     """Reuse the request scope/risk check on an LLM-written search query."""
     assessment = assess_request(query)
@@ -890,23 +942,39 @@ async def propose_tool_call(state: ResearchState, router: Optional[ModelRouter] 
     provider = None
     tool, inputs, task = rule_tool, rule_inputs, rule_task
 
+    failures = int(state.get("tool_selection_failures") or 0)
+    paused = bool(state.get("llm_proposals_paused"))
+    max_failures = max(1, int(settings.TOOL_SELECTION_MAX_CONSECUTIVE_FAILURES))
+    extra_logs: List[Dict[str, Any]] = []
+
     if not tool_calling.needs_llm(options):
         outcome, source = "SINGLE_OPTION", "rules"
         decision = f"Single legal option; no proposal needed; rule chose {rule_text}."
         stats["single_option"] += 1
+    elif paused:
+        outcome, source = "PAUSED", "rules"
+        decision = f"LLM proposals paused for this run after repeated failures; rule chose {rule_text}."
+        stats["paused"] += 1
     elif _router_degraded(llm):
         outcome, source = "FALLBACK", "rules"
         decision = f"LLM unavailable (degraded mode); rule chose {rule_text}."
         stats["fallback"] += 1
     else:
         timeout = float(settings.TOOL_SELECTION_TIMEOUT_SECONDS)
+        failed = False
         try:
+            # single_shot + timeout: one attempt per provider, each HTTP request
+            # bounded by what is left of the budget, and no fallback once the
+            # budget is spent, so the worker thread ends about when we stop
+            # waiting instead of running on (retrying, falling back) unseen.
             response = await asyncio.wait_for(
                 asyncio.to_thread(
                     llm.generate_tool_call,
                     tool_calling.build_prompt(state, options),
                     tool_calling.specs_for_options(options),
                     system_prompt=tool_calling.SYSTEM_PROMPT,
+                    single_shot=True,
+                    timeout=timeout,
                 ),
                 timeout=timeout,
             )
@@ -918,11 +986,14 @@ async def propose_tool_call(state: ResearchState, router: Optional[ModelRouter] 
             outcome, source = "FALLBACK", "rules"
             decision = f"LLM timed out after {timeout:g}s; rule chose {rule_text}."
             stats["fallback"] += 1
+            failed = True
         except Exception as exc:
             outcome, source = "FALLBACK", "rules"
-            decision = f"LLM unavailable ({type(exc).__name__}); rule chose {rule_text}."
+            decision = f"LLM unavailable ({type(exc).__name__}); rule chose {rule_text}. Error: {_short_error(exc)}"
             stats["fallback"] += 1
+            failed = True
         else:
+            failures = 0
             proposal = {"name": call.name, "arguments": call.arguments, "call_id": getattr(call, "call_id", None)}
             proposed_text = tool_calling.format_call(call.name, call.arguments)
             check = tool_calling.validate_proposal(
@@ -945,12 +1016,24 @@ async def propose_tool_call(state: ResearchState, router: Optional[ModelRouter] 
                 outcome, source = "REJECTED", "rules"
                 decision = f"LLM proposed {proposed_text}: rejected because {check.reason}; rule chose {rule_text}."
                 stats["rejected"] += 1
+        if failed:
+            failures += 1
+            if failures >= max_failures:
+                # Circuit breaker: stop spending the run's time (and the
+                # providers' rate limits) on proposals that keep failing.
+                paused = True
+                extra_logs.append(_log_event(
+                    state, "propose_tool_call",
+                    f"LLM proposals paused for this run after {failures} consecutive failures; using rules.",
+                    tool=tool, outcome="PAUSED", details={"consecutive_failures": failures}, step=step,
+                ))
 
     logs = list(state.get("observable_logs", []))
     logs.append(_log_event(
         state, "propose_tool_call", decision, tool=tool, outcome=outcome,
         details={"source": source, "provider": provider, "options": len(options)}, step=step,
     ))
+    logs.extend(extra_logs)
     return {
         "selected_tool": tool,
         "tool_inputs": inputs,
@@ -964,6 +1047,8 @@ async def propose_tool_call(state: ResearchState, router: Optional[ModelRouter] 
             "provider": provider,
         },
         "tool_selection_stats": stats,
+        "tool_selection_failures": failures,
+        "llm_proposals_paused": paused,
         "step_count": step,
         "observable_logs": logs,
     }
@@ -1731,12 +1816,19 @@ def _references_from_state(state: ResearchState) -> List[Dict[str, Any]]:
 def _tool_selection_summary(stats: Dict[str, int]) -> str:
     accepted, rejected = stats.get("accepted", 0), stats.get("rejected", 0)
     fallback, single = stats.get("fallback", 0), stats.get("single_option", 0)
+    paused = stats.get("paused", 0)
     proposals = accepted + rejected
-    return (
+    text = (
         f"Tool selection: the LLM proposed {proposals} tool call(s); {accepted} passed validation and were used, "
         f"{rejected} were rejected in favour of the rule-based choice. {fallback} decision(s) fell back to "
         f"the rules because the LLM was unavailable, and {single} step(s) had a single legal action."
     )
+    if paused:
+        text += (
+            f" After repeated LLM failures, proposals were paused and {paused} later decision(s) "
+            "used the rules directly."
+        )
+    return text
 
 
 def _partial_report(state: ResearchState, goal: str, extracted: List[str], llm, error: Optional[str]) -> Dict[str, Any]:

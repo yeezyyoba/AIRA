@@ -47,6 +47,19 @@ class InvalidEmbeddingError(EmbeddingError, ValueError):
 class BaseEmbeddingProvider(ABC):
     """Abstract base class for embedding providers."""
 
+    # True for providers that call a real external API; only those are
+    # counted in a session's API usage (the mock and null providers are not).
+    counts_as_api_call: bool = False
+
+    def _record_usage(self, success: bool, texts: int, rate_limited: bool = False) -> None:
+        if not self.counts_as_api_call:
+            return
+        from llm.usage_tracker import current_session_usage
+
+        session = current_session_usage()
+        if session is not None:
+            session.add_embedding_call(success, texts, rate_limited=rate_limited)
+
     def __init__(
         self,
         model_name: str,
@@ -125,13 +138,17 @@ class BaseEmbeddingProvider(ABC):
                     timeout=self.timeout,
                 )
             except asyncio.TimeoutError as e:
+                self._record_usage(False, len(batch))
                 logger.error(f"Embedding generation timed out after {self.timeout}s for batch of {len(batch)} items")
                 raise EmbeddingTimeoutError(f"Embedding generation timed out after {self.timeout} seconds") from e
-            except EmbeddingError:
+            except EmbeddingError as e:
+                self._record_usage(False, len(batch), rate_limited=isinstance(e, EmbeddingRateLimitError))
                 raise
             except Exception as e:
+                self._record_usage(False, len(batch))
                 logger.error(f"Failed to generate embeddings: {e}")
                 raise EmbeddingError(f"Embedding provider '{self.model_name}' failed: {e}") from e
+            self._record_usage(True, len(batch))
 
             if len(batch_embeddings) != len(batch):
                 raise InvalidEmbeddingError(
@@ -206,6 +223,8 @@ class GeminiEmbeddingProvider(BaseEmbeddingProvider):
     guaranteeing distinct, unaggregated embeddings for individual batched inputs
     via separate Content objects and explicit task types (RETRIEVAL_DOCUMENT vs RETRIEVAL_QUERY).
     """
+
+    counts_as_api_call = True
 
     def __init__(
         self,

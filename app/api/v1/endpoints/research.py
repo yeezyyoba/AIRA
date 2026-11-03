@@ -20,6 +20,7 @@ from agents.graph import build_research_graph
 from app.api.v1.endpoints.reports import _REPORTS_STORE, _SESSION_REPORTS
 from app.core.config import settings
 from app.core.session_events import current_session_id, event_bus, install_session_log_handler
+from llm.usage_tracker import get_session_usage, track_session_usage
 from logging_config.logger import get_logger
 from langgraph.checkpoint.memory import MemorySaver
 from tools.gap_identifier import identify_research_gaps
@@ -126,7 +127,14 @@ def _build_response(values: Dict[str, Any], session_id: str, default_status: str
         step_count=values.get("step_count"),
         max_steps=values.get("max_steps"),
         tool_selection_stats=values.get("tool_selection_stats") or {},
+        api_usage=_api_usage(values.get("session_id") or session_id),
     )
+
+
+def _api_usage(session_id: str) -> Optional[Dict[str, Any]]:
+    """Counted API requests of this session (None if this server process never ran it)."""
+    usage = get_session_usage(session_id)
+    return usage.snapshot() if usage is not None else None
 
 
 def _publish_node_update(session_id: str, node: str, update: Any, seen_logs: List[int]) -> None:
@@ -160,6 +168,8 @@ async def _run_graph(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]
     config = _graph_config(session_id)
     token = current_session_id.set(session_id)
     event_bus.start(session_id)
+    usage_scope = track_session_usage(session_id)
+    usage = usage_scope.__enter__()
     try:
         snapshot = await _shared_graph.aget_state(config)
         seen_logs = [len((snapshot.values or {}).get("observable_logs", []) or [])] if snapshot else [0]
@@ -193,6 +203,10 @@ async def _run_graph(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]
             detail=f"Research workflow failed unexpectedly ({type(exc).__name__}). See server logs for session '{session_id}'.",
         ) from exc
     finally:
+        summary = usage.summary_line()
+        logger.info("Session '%s' %s", session_id, summary)
+        event_bus.publish(session_id, summary, kind="status", source="api_usage", data={"api_usage": usage.snapshot()})
+        usage_scope.__exit__(None, None, None)
         event_bus.finish(session_id)
         current_session_id.reset(token)
 

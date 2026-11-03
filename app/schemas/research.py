@@ -42,6 +42,14 @@ class ResearchResponse(BaseModel):
         description="How the next tool was chosen: LLM proposals accepted/rejected, rule fallbacks, single-option steps",
     )
     max_steps: Optional[int] = None
+    api_usage: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "External API requests made by this session: per LLM provider (calls, successes, failures, "
+            "rate_limited, timeouts, tokens), embeddings, and academic APIs. None when this server "
+            "process has no record of the session (e.g. after a restart)."
+        ),
+    )
 
 
 class ResearchResumeRequest(BaseModel):

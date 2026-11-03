@@ -3,10 +3,12 @@
 Tracks token consumption, call counts, latency, and provider fallback events.
 Secrets and API keys are strictly excluded.
 """
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from logging_config.logger import get_logger
 
 logger = get_logger("usage_tracker")
@@ -31,6 +33,130 @@ class ProviderUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
     total_latency_seconds: float = 0.0
+
+
+def _llm_bucket() -> Dict[str, Any]:
+    return {
+        "calls": 0, "successes": 0, "failures": 0, "rate_limited": 0, "timeouts": 0,
+        "prompt_tokens": 0, "completion_tokens": 0, "cooldowns": 0,
+    }
+
+
+def _api_bucket() -> Dict[str, int]:
+    return {"requests": 0, "successes": 0, "failures": 0, "rate_limited": 0}
+
+
+class SessionUsage:
+    """External API usage of one research session (thread-safe).
+
+    Counts real requests only: every number here corresponds to a request that
+    was actually sent (or refused by a cooldown, which is counted separately).
+    """
+
+    def __init__(self, session_id: Optional[str] = None):
+        self.session_id = session_id
+        self._lock = threading.Lock()
+        self.llm: Dict[str, Dict[str, Any]] = {}
+        self.embeddings: Dict[str, int] = {"calls": 0, "successes": 0, "failures": 0, "rate_limited": 0, "texts": 0}
+        self.academic: Dict[str, Dict[str, int]] = {}
+        self.fallbacks = 0
+
+    def _llm(self, provider: str) -> Dict[str, Any]:
+        return self.llm.setdefault(provider, _llm_bucket())
+
+    def add_llm_call(self, provider: str, success: bool, prompt_tokens: int, completion_tokens: int) -> None:
+        with self._lock:
+            b = self._llm(provider)
+            b["calls"] += 1
+            b["successes" if success else "failures"] += 1
+            b["prompt_tokens"] += prompt_tokens
+            b["completion_tokens"] += completion_tokens
+
+    def add_llm_event(self, provider: str, key: str) -> None:
+        with self._lock:
+            self._llm(provider)[key] += 1
+
+    def add_fallback(self) -> None:
+        with self._lock:
+            self.fallbacks += 1
+
+    def add_embedding_call(self, success: bool, texts: int, rate_limited: bool = False) -> None:
+        with self._lock:
+            self.embeddings["calls"] += 1
+            self.embeddings["successes" if success else "failures"] += 1
+            self.embeddings["texts"] += texts
+            if rate_limited:
+                self.embeddings["rate_limited"] += 1
+
+    def add_academic_request(self, api: str, success: bool, rate_limited: bool = False) -> None:
+        with self._lock:
+            b = self.academic.setdefault(api, _api_bucket())
+            b["requests"] += 1
+            b["successes" if success else "failures"] += 1
+            if rate_limited:
+                b["rate_limited"] += 1
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            llm = {name: dict(b) for name, b in self.llm.items()}
+            return {
+                "llm": llm,
+                "llm_totals": {
+                    key: sum(b[key] for b in llm.values())
+                    for key in ("calls", "successes", "failures", "rate_limited", "timeouts")
+                },
+                "fallbacks": self.fallbacks,
+                "embeddings": dict(self.embeddings),
+                "academic": {name: dict(b) for name, b in self.academic.items()},
+            }
+
+    def summary_line(self) -> str:
+        snap = self.snapshot()
+        parts = []
+        for name, b in sorted(snap["llm"].items()):
+            parts.append(
+                f"{name} {b['calls']} calls ({b['failures']} failed, {b['rate_limited']} rate-limited, "
+                f"{b['timeouts']} timeouts)"
+            )
+        e = snap["embeddings"]
+        parts.append(f"embeddings {e['calls']} calls ({e['failures']} failed, {e['rate_limited']} rate-limited)")
+        for name, b in sorted(snap["academic"].items()):
+            parts.append(f"{name} {b['requests']} requests ({b['rate_limited']} rate-limited)")
+        return "API usage: " + "; ".join(parts)
+
+
+_current_session_usage: ContextVar[Optional[SessionUsage]] = ContextVar("aira_session_usage", default=None)
+_session_usage_registry: Dict[str, SessionUsage] = {}
+_registry_lock = threading.Lock()
+
+
+def current_session_usage() -> Optional[SessionUsage]:
+    return _current_session_usage.get()
+
+
+@contextmanager
+def track_session_usage(session_id: str) -> Iterator[SessionUsage]:
+    """Attribute every API call made inside this context (and its threads/tasks) to ``session_id``.
+
+    ``asyncio.to_thread`` and new tasks copy the context, so calls made from
+    worker threads are attributed too.
+    """
+    usage = get_session_usage(session_id) or SessionUsage(session_id)
+    with _registry_lock:
+        _session_usage_registry[session_id] = usage
+        # Keep the registry bounded in long-running servers.
+        while len(_session_usage_registry) > 500:
+            _session_usage_registry.pop(next(iter(_session_usage_registry)))
+    token = _current_session_usage.set(usage)
+    try:
+        yield usage
+    finally:
+        _current_session_usage.reset(token)
+
+
+def get_session_usage(session_id: str) -> Optional[SessionUsage]:
+    with _registry_lock:
+        return _session_usage_registry.get(session_id)
 
 
 class UsageTracker:
@@ -68,6 +194,9 @@ class UsageTracker:
             metrics.completion_tokens += completion_tokens
             metrics.total_tokens += (prompt_tokens + completion_tokens)
             metrics.total_latency_seconds += latency
+        session = current_session_usage()
+        if session is not None:
+            session.add_llm_call(provider, success, prompt_tokens, completion_tokens)
 
         logger.info(
             f"LLM Call Recorded | Provider: {provider} | Model: {model} | "
@@ -85,6 +214,9 @@ class UsageTracker:
         )
         with self._lock:
             self._fallback_history.append(event)
+        session = current_session_usage()
+        if session is not None:
+            session.add_fallback()
 
         logger.warning(
             f"Provider Failover Triggered: {from_provider} -> {to_provider} | Reason: {reason}"
@@ -95,6 +227,26 @@ class UsageTracker:
         key = f"{provider}:{error_type}"
         with self._lock:
             self._error_counts[key] = self._error_counts.get(key, 0) + 1
+
+    def record_rate_limited(self, provider: str) -> None:
+        """A provider answered 429 / quota exhausted."""
+        session = current_session_usage()
+        if session is not None:
+            session.add_llm_event(provider, "rate_limited")
+
+    def record_timeout(self, provider: str) -> None:
+        """A provider request timed out (504 / deadline / client timeout)."""
+        self.record_error(provider, "Timeout")
+        session = current_session_usage()
+        if session is not None:
+            session.add_llm_event(provider, "timeouts")
+
+    def record_cooldown(self, provider: str, seconds: float, reason: str) -> None:
+        """The router paused ``provider`` for ``seconds``."""
+        self.record_error(provider, "Cooldown")
+        session = current_session_usage()
+        if session is not None:
+            session.add_llm_event(provider, "cooldowns")
 
     def get_fallback_history(self) -> List[Dict[str, Any]]:
         """Return list of recorded fallback events."""

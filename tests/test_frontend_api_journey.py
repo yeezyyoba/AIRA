@@ -148,6 +148,15 @@ def test_complete_frontend_user_journey(api_client, monkeypatch, offline_llm_rou
     # The offline router was the one consulted, so no provider could be called.
     assert offline_llm_router.generate.called
     assert len(resume_data["observable_logs"]) > 0
+    # Per-session API usage is reported, and only real requests are counted:
+    # the offline router and mocked tools made none.
+    usage = resume_data["api_usage"]
+    assert usage is not None and set(usage) >= {"llm", "llm_totals", "embeddings", "academic", "fallbacks"}
+    assert usage["llm_totals"]["calls"] == 0
+    assert usage["embeddings"]["calls"] == 0  # mock embeddings are not an API
+    from app.core.session_events import event_bus
+    summaries = [e for e in event_bus.events_since(sess_id) if e.get("source") == "api_usage"]
+    assert summaries and summaries[-1]["message"].startswith("API usage:")
     assert resume_data["final_report"] is not None
     final_rep = resume_data["final_report"]
     report_id = final_rep.get("report_id")

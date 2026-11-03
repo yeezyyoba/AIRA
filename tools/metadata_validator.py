@@ -5,6 +5,7 @@ academic registries (Crossref, OpenAlex, Semantic Scholar).
 Statuses: VERIFIED, PARTIALLY_VERIFIED, CONFLICTING, UNVERIFIED.
 Never invents data or silently overwrites input metadata.
 """
+import asyncio
 import difflib
 import re
 import time
@@ -193,6 +194,31 @@ def _compare_years(input_year: Optional[int], reg_year: Optional[int]) -> Tuple[
     return False, f"Year mismatch: input {input_year} vs registry {reg_year} (difference {diff} years)"
 
 
+def _records_agree_with_input(
+    records: Dict[str, PaperMetadataSchema],
+    input_title: str,
+    input_authors: List[str],
+    input_year: Optional[int],
+) -> bool:
+    """True when Crossref AND OpenAlex both returned a record matching the input.
+
+    Same field checks the final status uses (title match, authors not in
+    conflict, year match), so skipping a third registry never turns a record
+    that would have been CONFLICTING into VERIFIED.
+    """
+    if not all(name in records for name in ("crossref", "openalex")):
+        return False
+    for name in ("crossref", "openalex"):
+        record = records[name]
+        if not record.title or not _compare_titles(input_title, record.title)[0]:
+            return False
+        if record.authors and input_authors and not _compare_authors(input_authors, record.authors)[0]:
+            return False
+        if record.year is not None and not _compare_years(input_year, record.year)[0]:
+            return False
+    return True
+
+
 async def validate_paper_metadata(
     paper: Union[PaperMetadataSchema, Dict[str, Any]],
     paper_id: Optional[str] = None,
@@ -226,27 +252,34 @@ async def validate_paper_metadata(
 
     # 1. Fetch authoritative records by DOI if DOI is present
     if norm_in_doi:
-        sources_checked.extend(["crossref", "openalex", "semantic_scholar"])
-        try:
-            cr_rec = await cr_client.get_by_doi(norm_in_doi)
-            if cr_rec:
-                registry_records["crossref"] = cr_rec
-        except Exception as e:
-            logger.warning(f"Crossref lookup failed for DOI {norm_in_doi}: {e}")
+        sources_checked.extend(["crossref", "openalex"])
 
-        try:
-            oa_rec = await oa_client.get_by_doi(norm_in_doi)
-            if oa_rec:
-                registry_records["openalex"] = oa_rec
-        except Exception as e:
-            logger.warning(f"OpenAlex lookup failed for DOI {norm_in_doi}: {e}")
+        async def _lookup(name: str, client: Any) -> Optional[PaperMetadataSchema]:
+            try:
+                return await client.get_by_doi(norm_in_doi)
+            except Exception as e:
+                logger.warning(f"{name} lookup failed for DOI {norm_in_doi}: {e}")
+                return None
 
-        try:
-            s2_rec = await s2_client.get_by_doi(norm_in_doi)
+        # Crossref and OpenAlex are independent services: ask both at once.
+        cr_rec, oa_rec = await asyncio.gather(_lookup("Crossref", cr_client), _lookup("OpenAlex", oa_client))
+        if cr_rec:
+            registry_records["crossref"] = cr_rec
+        if oa_rec:
+            registry_records["openalex"] = oa_rec
+
+        if _records_agree_with_input(registry_records, input_title, input_authors, input_year):
+            # Two independent registries already corroborate the record, which
+            # is all VERIFIED requires. Semantic Scholar allows ~1 request/s,
+            # so it is saved for records that still need a second opinion.
+            logger.info(
+                f"Semantic Scholar lookup skipped for DOI {norm_in_doi}: Crossref and OpenAlex already agree."
+            )
+        else:
+            sources_checked.append("semantic_scholar")
+            s2_rec = await _lookup("Semantic Scholar", s2_client)
             if s2_rec:
                 registry_records["semantic_scholar"] = s2_rec
-        except Exception as e:
-            logger.warning(f"Semantic Scholar lookup failed for DOI {norm_in_doi}: {e}")
 
     # 2. If no DOI or no records found by DOI, search registries by title
     if not registry_records and input_title:

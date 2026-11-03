@@ -231,7 +231,7 @@ CODE_OWNED_FIELDS = {
 # Free-text arguments must not smuggle in URLs or filesystem paths.
 _URL_OR_PATH = re.compile(r"(?i)([a-z][a-z0-9+.-]*://|^\s*[/~\\]|\bfile:|\bwww\.)")
 
-STATS_KEYS = ("accepted", "rejected", "fallback", "single_option")
+STATS_KEYS = ("accepted", "rejected", "fallback", "single_option", "paused")
 
 SYSTEM_PROMPT = (
     "You are the tool-selection component of AIRA, a language-technology research agent. "
@@ -341,12 +341,26 @@ def validate_proposal(
         arguments = {}
     if not isinstance(arguments, dict):
         return _reject("arguments are not a JSON object")
+    pre_notes: List[str] = []
+    # Some models fill a no-argument call with a placeholder such as {"": {}}.
+    # An empty key can never be a real argument; drop it rather than reject.
+    blank = [key for key in arguments if not str(key).strip()]
+    if blank:
+        arguments = {k: v for k, v in arguments.items() if str(k).strip()}
+        pre_notes.append("ignored an empty-named placeholder argument")
     owned = sorted(CODE_OWNED_FIELDS & set(arguments))
     if owned:
         return _reject(f"the LLM tried to supply code-owned field(s) {owned}; URLs, paths and payloads come from the session")
     for key, value in arguments.items():
         if isinstance(value, str) and _URL_OR_PATH.search(value):
             return _reject(f"argument '{key}' contains a URL or file path")
+    if not TOOL_ARGUMENT_MODELS[name].model_fields and arguments:
+        # The tool takes no LLM-chosen arguments: everything it needs is built
+        # by code, so whatever the model sent cannot change the call. Ignore it
+        # (and say so) instead of discarding an otherwise valid choice.
+        # Code-owned fields and URLs were already rejected above.
+        pre_notes.append(f"ignored argument(s) {sorted(arguments)} for a tool that takes none")
+        arguments = {}
     try:
         args = TOOL_ARGUMENT_MODELS[name].model_validate(arguments)
     except ValidationError as exc:
@@ -354,7 +368,7 @@ def validate_proposal(
         where = ".".join(str(part) for part in first.get("loc", ())) or "arguments"
         return _reject(f"invalid arguments ({where}: {first.get('msg')})")
 
-    notes: List[str] = []
+    notes: List[str] = list(pre_notes)
     candidates = [o for o in options if o["tool"] == name]
     option = candidates[0]
 

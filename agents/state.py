@@ -63,7 +63,9 @@ class ResearchState(TypedDict, total=False):
     # LLM function calling for tool selection (agents/tool_calling.py)
     tool_options: List[Dict[str, Any]]          # legal options for this step; [0] is the rule choice
     tool_selection: Optional[Dict[str, Any]]    # last decision: source, proposal, rule_choice, reason
-    tool_selection_stats: Dict[str, int]        # accepted / rejected / fallback / single_option
+    tool_selection_stats: Dict[str, int]        # accepted / rejected / fallback / single_option / paused
+    tool_selection_failures: int                # consecutive failed / timed-out proposals (circuit breaker)
+    llm_proposals_paused: bool                  # breaker open: rules only for the rest of the run
 
     # Execution history and report
     tool_results: List[Dict[str, Any]]

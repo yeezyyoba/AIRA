@@ -411,7 +411,7 @@ def _scripted_tool_caller():
     """A mocked LLM that makes sensible choices, plus one illegal proposal."""
     tried_illegal = {"done": False}
 
-    def generate_tool_call(prompt, tools, system_prompt=None):
+    def generate_tool_call(prompt, tools, system_prompt=None, **kwargs):
         names = [t["name"] for t in tools]
         if "search_academic_papers" in names:
             return _call_response("search_academic_papers", {"query": "Conformer speech recognition LibriSpeech"})

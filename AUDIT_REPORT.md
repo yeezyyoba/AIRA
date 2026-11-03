@@ -61,6 +61,12 @@ The run also exposed four defects, all fixed:
 | 34 | Frontend: `PARTIAL` and `UNACCEPTABLE_RISK` were missing from the terminal-status list, so the UI polled those sessions forever and showed a spinning "in progress" badge. | Added them (and `OUT_OF_SCOPE`) as terminal statuses with their own badges, plus a banner explaining refused requests. |
 | 35 | Verifiable Citations tab crashed (citations are objects since the audit) and papers were identified only by DOI. | Citations normalised to text; papers shown as "First author et al., year" with the full title, in the UI and the Markdown report. |
 | 36 | Tool selection was purely rule based, although the course brief (slides 10-14) asks for function calling: "the model proposes the route; the application decides what to trust and execute". | Hybrid selection: `select_tools` lists the legal options; the new `propose_tool_call` node lets Gemini/Groq propose a call with native function calling; code validates the tool, arguments (Pydantic), paper ids and limits, and falls back to the rule choice when the proposal is invalid or the LLM is unavailable. Decisions are logged and counted (`tool_selection_stats`). Tested offline in `tests/test_tool_calling.py`, including a paper title that tries to inject a tool call. |
+| 37 | Live run (event log, 3 Nov): six tool proposals timed out at 20 s, but `asyncio.wait_for` cannot stop the worker thread, so each orphaned call kept retrying and falling back to Groq in the background, burning both providers' rate limits. | Proposals are single-shot with a time budget: one attempt per provider, the remaining budget is passed as the provider's HTTP timeout (Gemini per-request `http_options`, Groq `timeout`), and no fallback starts once the budget is spent. After `TOOL_SELECTION_MAX_CONSECUTIVE_FAILURES` (2) consecutive failures, proposals are paused for the rest of the run ("LLM proposals paused for this run after repeated failures; using rules"), counted as `paused`. |
+| 38 | Same run: Groq answered no-argument tool calls with `{"": {}}`, which failed `extra="forbid"` ("Extra inputs are not permitted"), so three valid choices were rejected. | Empty-named keys are dropped; for tools that take no LLM arguments, other arguments are ignored and noted (URLs and code-owned fields are still rejected first). Gemini no longer receives an empty parameter schema for those tools. |
+| 39 | Gemini 503 "high demand" / 504 / 429 and Groq 429 were retried against the same provider within 0.5–2 s, which mostly earned more 429s. | No same-provider retry for 429, 503 overload or timeouts: the provider is put in a cooldown (its own "retry in Ns" hint, capped at 30 s; defaults 20 s for 429, 15 s for 503), the router falls back immediately and skips cooling providers. A Gemini quota error with a short hint pauses Gemini only for that hint; without one (daily quota) for the full cooldown. When every provider is cooling down the call fails fast without entering the 2-minute Degraded Mode. Connection resets are still retried. |
+| 40 | 26 Semantic Scholar 429s in one run: every DOI was looked up in all three registries, concurrently. | A process-wide pacer spaces Semantic Scholar requests (`SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS`, 1.1 s) and a 429's `Retry-After` delays all callers. S2 is skipped when Crossref and OpenAlex both return records that match the input (the two registries VERIFIED requires); it is no longer listed in `sources_checked` then. Crossref and OpenAlex are queried in parallel. |
+| 41 | PDF downloads often failed on doi.org landing pages (HTTP 202, "not a valid PDF") although a direct PDF link was known. | Links are ranked: direct `.pdf` / arXiv / OpenReview PDFs first, doi.org landing pages last; arXiv `abs` and ACL Anthology pages map to their PDF addresses. |
+| 42 | No visibility into how many API requests a run made. | Per-session `api_usage` in the API response (per LLM provider: calls, successes, failures, 429s, timeouts, pauses, tokens; fallbacks; real embedding calls; academic API requests and 429s), an end-of-run "API usage: …" log line and live event, and an **API Usage** panel in the UI with the LLM tool-choice counts. Tested in `tests/test_rate_limits.py` (46 tests, all offline). |
 
 ## 2. Test expectations corrected (with reasons)
 
@@ -109,10 +115,14 @@ New tests: `tests/test_reliability.py` (29), `tests/test_prompt_injection.py` (1
 * `/research/sessions` runs the whole workflow inside the request; long runs need a
   generous client timeout (a background-job API would be better).
 * Backup files (`agents/nodes.py.bak*`, `evaluation/*.backup`) were left untouched.
-* LLM tool selection is tested only with mocked provider clients. Real Gemini/Groq
-  function-calling responses (especially for tools with an empty parameter schema) have
-  not been exercised yet; a live run should confirm the accepted/rejected ratio.
+* LLM tool selection was exercised in one live run (findings 37-39). The fixes for
+  those findings are tested with mocked clients only; a new live run should confirm
+  the accepted/rejected/fallback counts in the API Usage panel.
   Each proposal costs one LLM call and one graph step (about 6 per run, within
   `MAX_AGENT_STEPS=150`).
+* Cooldowns, the Semantic Scholar pacer and session usage are per server process
+  (not shared across several workers). Gemini rejects request deadlines under ~10 s, so
+  a Gemini proposal can outlive a shorter budget by a few seconds; its result is then
+  discarded, and no fallback is started.
 * Live provider behaviour (real Gemini/Groq/OpenAlex) was not exercised in this audit;
   use `scripts/manual_test_*.py` for that.

@@ -6,10 +6,13 @@ DOI normalization, and strict metadata parsing without hallucination.
 import asyncio
 import re
 import string
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from app.core.config import settings
+from llm.usage_tracker import current_session_usage
 from logging_config.logger import get_logger
 from validation.schemas import PaperMetadataSchema
 
@@ -93,8 +96,71 @@ class AcademicNotFoundError(AcademicClientError):
     pass
 
 
+class RequestPacer:
+    """Process-wide minimum spacing between requests to one API.
+
+    Loop-agnostic (a thread lock reserves the next slot; the wait itself is an
+    ``asyncio.sleep``), so concurrent validations across sessions share one
+    budget. A 429's ``Retry-After`` pushes the next slot out for everyone.
+    """
+
+    def __init__(self, name: str, interval_getter):
+        self.name = name
+        self._interval_getter = interval_getter
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    def _interval(self) -> float:
+        try:
+            return max(0.0, float(self._interval_getter()))
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def wait_turn(self) -> float:
+        """Wait for this caller's slot; returns the seconds waited."""
+        interval = self._interval()
+        if interval <= 0 and self._next_slot <= time.monotonic():
+            return 0.0
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + interval
+        delay = slot - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return delay
+
+    def back_off(self, seconds: float) -> None:
+        """Nobody calls this API again for ``seconds`` (a 429 told us so)."""
+        with self._lock:
+            self._next_slot = max(self._next_slot, time.monotonic() + max(0.0, seconds))
+
+    def reset(self) -> None:
+        with self._lock:
+            self._next_slot = 0.0
+
+
+# Semantic Scholar allows about one request per second (with or without a key).
+semantic_scholar_pacer = RequestPacer(
+    "Semantic Scholar", lambda: settings.SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS
+)
+
+
+def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
 class BaseAcademicClient:
     """Base client with resilient request execution and backoff."""
+
+    # Optional process-wide pacer for APIs with a strict request rate.
+    pacer: Optional[RequestPacer] = None
 
     def __init__(self, provider_name: str):
         self.provider_name = provider_name
@@ -115,6 +181,8 @@ class BaseAcademicClient:
 
         for attempt in range(self.max_retries + 1):
             try:
+                if self.pacer is not None:
+                    await self.pacer.wait_turn()
                 response = await client.request(
                     method=method,
                     url=url,
@@ -122,6 +190,7 @@ class BaseAcademicClient:
                     params=params,
                     timeout=self.timeout,
                 )
+                self._record_usage(response.status_code)
 
                 # 1. Success
                 if response.status_code == 200:
@@ -149,11 +218,15 @@ class BaseAcademicClient:
 
                 # 3. Rate Limit (HTTP 429) -> Check Retry-After and retry
                 if response.status_code == 429:
-                    retry_after_header = response.headers.get("Retry-After")
+                    retry_after = _retry_after_seconds(response)
                     sleep_time = self.initial_backoff * (2 ** attempt)
-                    if retry_after_header and retry_after_header.isdigit():
-                        sleep_time = max(float(retry_after_header), sleep_time)
+                    if retry_after is not None:
+                        sleep_time = max(retry_after, sleep_time)
                     sleep_time = min(sleep_time, 5.0)
+                    if self.pacer is not None:
+                        # Everyone waits, not just this request: the limit is per API key / IP.
+                        self.pacer.back_off(max(sleep_time, retry_after or 0.0))
+                        sleep_time = 0.0  # wait_turn() at the top of the loop does the waiting
 
                     if attempt < self.max_retries:
                         logger.warning(
@@ -186,6 +259,7 @@ class BaseAcademicClient:
 
             except (httpx.TimeoutException, httpx.NetworkError) as net_err:
                 last_exception = net_err
+                self._record_usage(None)
                 sleep_time = min(self.initial_backoff * (2 ** attempt), 4.0)
                 if attempt < self.max_retries:
                     logger.warning(
@@ -203,6 +277,14 @@ class BaseAcademicClient:
         if last_exception:
             raise AcademicClientError(f"{self.provider_name} error: {last_exception}", provider=self.provider_name)
         raise AcademicClientError(f"{self.provider_name} unexpected failure", provider=self.provider_name)
+
+    def _record_usage(self, status_code: Optional[int]) -> None:
+        session = current_session_usage()
+        if session is not None:
+            session.add_academic_request(
+                # A 404 is an answer ("not indexed here"), not a failed request.
+                self.provider_name, success=status_code in (200, 404), rate_limited=status_code == 429
+            )
 
     async def _send_request(
         self,
@@ -363,6 +445,8 @@ class OpenAlexClient(BaseAcademicClient):
 
 class SemanticScholarClient(BaseAcademicClient):
     """Client for Semantic Scholar Graph API (https://api.semanticscholar.org)."""
+
+    pacer = semantic_scholar_pacer
 
     def __init__(self, api_key: Optional[str] = None):
         super().__init__("semantic_scholar")

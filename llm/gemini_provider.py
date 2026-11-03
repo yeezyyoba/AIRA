@@ -21,6 +21,7 @@ from llm.provider_errors import (
     ProviderStatus,
     ProviderUnavailableError,
     QuotaExceededError,
+    parse_retry_after_seconds,
     RateLimitError,
 )
 from logging_config.logger import get_logger
@@ -143,11 +144,17 @@ class GeminiProvider:
 
         if "resource_exhausted" in err_msg or "quota" in err_msg:
             self.status = ProviderStatus.QUOTA_EXHAUSTED
-            raise QuotaExceededError(f"Gemini quota exhausted: {error}", provider=self.name)
+            raise QuotaExceededError(
+                f"Gemini quota exhausted: {error}", provider=self.name,
+                retry_after=parse_retry_after_seconds(error),
+            )
 
         if has_code("429") or "rate limit" in err_msg:
             self.status = ProviderStatus.RATE_LIMITED
-            raise RateLimitError(f"Gemini rate limit exceeded: {error}", provider=self.name)
+            raise RateLimitError(
+                f"Gemini rate limit exceeded: {error}", provider=self.name,
+                retry_after=parse_retry_after_seconds(error),
+            )
 
         if (
             "unavailable" in err_msg
@@ -293,28 +300,41 @@ class GeminiProvider:
             raw_response=response,
         )
 
+    @staticmethod
+    def _function_declaration(spec: Dict[str, Any]) -> Any:
+        """Declaration for one tool; tools without arguments get no parameter schema.
+
+        An empty object schema makes some models return odd placeholder
+        arguments (``{"": {}}``); omitting it asks for a plain no-argument call.
+        """
+        parameters = spec.get("parameters") or {}
+        kwargs: Dict[str, Any] = {"name": spec["name"], "description": spec.get("description", "")}
+        if parameters.get("properties"):
+            kwargs["parameters_json_schema"] = parameters
+        return types.FunctionDeclaration(**kwargs)
+
     def generate_tool_call(
         self,
         prompt: str,
         tools: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         temperature: float = 0.0,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Ask Gemini to propose exactly one call to one of ``tools`` (native function calling).
 
         Mode ANY forces a function call; automatic function calling is disabled
         so the SDK never executes anything: the application validates and runs it.
+        ``timeout`` (seconds) bounds this one HTTP request.
         """
         self._ensure_authenticated()
-        declarations = [
-            types.FunctionDeclaration(
-                name=spec["name"],
-                description=spec.get("description", ""),
-                parameters_json_schema=spec.get("parameters") or {"type": "object", "properties": {}},
-            )
-            for spec in tools
-        ]
+        declarations = [self._function_declaration(spec) for spec in tools]
+        extra: Dict[str, Any] = {}
+        if timeout is not None:
+            # Gemini rejects server deadlines shorter than ~10s, so never ask for less.
+            extra["http_options"] = types.HttpOptions(timeout=int(max(10.0, float(timeout)) * 1000))
         config = types.GenerateContentConfig(
+            **extra,
             temperature=temperature,
             system_instruction=system_prompt if system_prompt else None,
             tools=[types.Tool(function_declarations=declarations)],

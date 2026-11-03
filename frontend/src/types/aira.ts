@@ -154,6 +154,47 @@ export interface ResearchResponse {
   identified_gaps?: ResearchGap[];
   citations?: Record<string, CitationValue>;
   is_degraded?: boolean;
+  step_count?: number | null;
+  max_steps?: number | null;
+  /** How each next tool was chosen (LLM function calling vs rules). */
+  tool_selection_stats?: ToolSelectionStats;
+  /** Counted external API requests of this session; null if the server has no record. */
+  api_usage?: ApiUsage | null;
+}
+
+export interface ToolSelectionStats {
+  accepted?: number;
+  rejected?: number;
+  fallback?: number;
+  single_option?: number;
+  /** Decisions made by rules because LLM proposals were paused after repeated failures. */
+  paused?: number;
+}
+
+export interface LlmProviderUsage {
+  calls: number;
+  successes: number;
+  failures: number;
+  rate_limited: number;
+  timeouts: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cooldowns: number;
+}
+
+export interface AcademicApiUsage {
+  requests: number;
+  successes: number;
+  failures: number;
+  rate_limited: number;
+}
+
+export interface ApiUsage {
+  llm: Record<string, LlmProviderUsage>;
+  llm_totals: { calls: number; successes: number; failures: number; rate_limited: number; timeouts: number };
+  fallbacks: number;
+  embeddings: { calls: number; successes: number; failures: number; rate_limited: number; texts: number };
+  academic: Record<string, AcademicApiUsage>;
 }
 
 export interface SystemHealthServices {

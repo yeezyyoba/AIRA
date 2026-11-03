@@ -46,6 +46,9 @@ os.environ.update({
     "TOOL_SELECTION_MODE": "rules",
     # Keep retry backoff short so failure-path tests stay fast.
     "ACADEMIC_INITIAL_BACKOFF_SECONDS": "0.01",
+    # Mocked Semantic Scholar responses need no real-world pacing; the pacer
+    # itself is tested in test_rate_limits.py with an explicit interval.
+    "SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS": "0",
 })
 
 

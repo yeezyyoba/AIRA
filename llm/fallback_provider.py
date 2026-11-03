@@ -20,6 +20,7 @@ from llm.provider_errors import (
     ProviderStatus,
     ProviderUnavailableError,
     QuotaExceededError,
+    parse_retry_after_seconds,
     RateLimitError,
 )
 from logging_config.logger import get_logger
@@ -96,9 +97,15 @@ class GroqProvider:
         if isinstance(error, groq.RateLimitError) or "429" in err_msg:
             if "quota" in err_msg or "exceeded your current quota" in err_msg:
                 self.status = ProviderStatus.QUOTA_EXHAUSTED
-                raise QuotaExceededError(f"Groq quota exhausted: {error}", provider=self.name)
+                raise QuotaExceededError(
+                    f"Groq quota exhausted: {error}", provider=self.name,
+                    retry_after=parse_retry_after_seconds(error),
+                )
             self.status = ProviderStatus.RATE_LIMITED
-            raise RateLimitError(f"Groq rate limit exceeded: {error}", provider=self.name)
+            raise RateLimitError(
+                f"Groq rate limit exceeded: {error}", provider=self.name,
+                retry_after=parse_retry_after_seconds(error),
+            )
 
         if (
             isinstance(error, (groq.APIConnectionError, groq.InternalServerError, groq.APITimeoutError))
@@ -250,8 +257,12 @@ class GroqProvider:
         tools: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         temperature: float = 0.0,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
-        """Ask Groq to propose exactly one call to one of ``tools`` (tool_choice="required")."""
+        """Ask Groq to propose exactly one call to one of ``tools`` (tool_choice="required").
+
+        ``timeout`` (seconds) bounds this one HTTP request.
+        """
         self._ensure_authenticated()
         messages: List[Dict[str, str]] = []
         if system_prompt:
@@ -277,6 +288,7 @@ class GroqProvider:
                 temperature=temperature,
                 tools=groq_tools,
                 tool_choice="required",
+                **({"timeout": float(timeout)} if timeout is not None else {}),
             )
         except Exception as e:
             self._classify_and_raise(e)

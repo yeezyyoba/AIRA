@@ -21,6 +21,7 @@ from llm.provider_errors import (
     ProviderUnavailableError,
     QuotaExceededError,
     RateLimitError,
+    parse_retry_after_seconds,
 )
 from llm.usage_tracker import usage_tracker
 from logging_config.logger import get_logger
@@ -48,10 +49,69 @@ class ModelRouter:
         # began. None means "set externally": stay in that state until reset.
         self._degraded_since: Optional[float] = None
         self._primary_quota_since: Optional[float] = None
+        # How long the current primary quota pause lasts (a provider's retry
+        # hint can make it shorter than the full degraded cooldown).
+        self._primary_quota_seconds: Optional[float] = None
         self.cooldown_seconds: float = float(settings.LLM_DEGRADED_COOLDOWN_SECONDS)
+        # Per-provider "do not call before" monotonic deadlines, set after a
+        # 429 / overload so we stop hammering a provider that just refused us.
+        self._cooling_until: Dict[str, float] = {}
 
     def _cooldown_elapsed(self, since: Optional[float]) -> bool:
         return since is not None and (time.monotonic() - since) >= self.cooldown_seconds
+
+    # ------------------------------------------------------------------
+    # Per-provider cooldowns
+    # ------------------------------------------------------------------
+    def cooling_remaining(self, provider_name: str) -> float:
+        """Seconds until ``provider_name`` may be called again (0 when it may)."""
+        until = self._cooling_until.get(provider_name)
+        if until is None:
+            return 0.0
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            self._cooling_until.pop(provider_name, None)
+            return 0.0
+        return remaining
+
+    def _start_cooldown(self, provider_name: str, seconds: float, reason: str) -> None:
+        seconds = max(0.0, float(seconds))
+        if seconds <= 0:
+            return
+        until = time.monotonic() + seconds
+        # Never shorten a cooldown that is already longer.
+        self._cooling_until[provider_name] = max(until, self._cooling_until.get(provider_name, 0.0))
+        usage_tracker.record_cooldown(provider_name, seconds, reason)
+        logger.warning(f"{provider_name} paused for {seconds:.1f}s after {reason}; requests go to the other provider.")
+
+    @staticmethod
+    def _hinted_cooldown(error: Exception, default_seconds: float) -> float:
+        """Cooldown for a refused request: the provider's own hint (capped) or a default."""
+        hint = getattr(error, "retry_after", None)
+        if hint is None:
+            hint = parse_retry_after_seconds(error)
+        cap = float(settings.LLM_RETRY_HINT_MAX_SECONDS)
+        if hint is None or hint <= 0:
+            return min(default_seconds, cap)
+        return min(float(hint), cap)
+
+    @staticmethod
+    def _is_overload_or_timeout(error: Exception) -> bool:
+        """503 'high demand' / overloaded, or 504 / deadline / timeout.
+
+        Retrying these seconds later against the same provider mostly burns the
+        caller's time (and, for timeouts, a whole extra request), so the router
+        falls back instead.
+        """
+        msg = str(error).lower()
+        return any(token in msg for token in (
+            "503", "504", "overloaded", "high demand", "deadline", "timed out", "timeout",
+        ))
+
+    @staticmethod
+    def _is_timeout(error: Exception) -> bool:
+        msg = str(error).lower()
+        return any(token in msg for token in ("504", "deadline", "timed out", "timeout"))
 
     def is_degraded_mode(self) -> bool:
         """Return True if all LLM providers are currently exhausted or unavailable.
@@ -76,6 +136,8 @@ class ModelRouter:
         self.degraded_mode = False
         self._degraded_since = None
         self._primary_quota_since = None
+        self._primary_quota_seconds = None
+        self._cooling_until.clear()
         logger.info("ModelRouter status reset: providers set to AVAILABLE.")
 
     def _execute_with_retry(
@@ -83,15 +145,24 @@ class ModelRouter:
         provider: Any,
         method_name: str,
         *args: Any,
+        max_retries: Optional[int] = None,
+        deadline: Optional[float] = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Execute a provider call with bounded exponential backoff on transient errors.
 
         Permanent errors (AuthenticationError, QuotaExceededError) are NOT retried.
+        Rate limits (429) and overload / timeout errors are not retried against
+        the same provider either: the provider is put in a short cooldown (its
+        own retry hint when it gives one) and the router falls back. Only
+        other transient failures (connection reset, empty response) are retried.
+
+        ``deadline`` is a ``time.monotonic()`` value; no retry starts after it.
         """
         last_exception: Optional[Exception] = None
+        retries = self.max_retries if max_retries is None else max(0, int(max_retries))
 
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(retries + 1):
             try:
                 method = getattr(provider, method_name)
                 response: LLMResponse = method(*args, **kwargs)
@@ -134,6 +205,17 @@ class ModelRouter:
                     success=False,
                 )
                 usage_tracker.record_error(provider.name, "QuotaExceededError")
+                usage_tracker.record_rate_limited(provider.name)
+                if provider is not self.gemini:
+                    # The primary's quota pause is tracked by the router itself;
+                    # any other provider gets a plain cooldown.
+                    self._start_cooldown(
+                        provider.name,
+                        self._hinted_cooldown(quota_err, self.cooldown_seconds)
+                        if (getattr(quota_err, "retry_after", None) or parse_retry_after_seconds(quota_err))
+                        else self.cooldown_seconds,
+                        "quota exhaustion",
+                    )
                 logger.warning(f"Quota exhausted for {provider.name}. Skipping retries to trigger fallback.")
                 raise quota_err
 
@@ -161,22 +243,51 @@ class ModelRouter:
                 logger.error(f"{provider.name} rejected the request: {bad_request}. Not retrying.")
                 raise bad_request
 
-            except (RateLimitError, ProviderUnavailableError, InvalidResponseError) as transient_err:
+            except RateLimitError as rate_err:
+                # 429: retrying the same provider a second later just earns another 429.
+                last_exception = rate_err
+                usage_tracker.record_error(provider.name, "RateLimitError")
+                usage_tracker.record_rate_limited(provider.name)
+                self._start_cooldown(
+                    provider.name,
+                    self._hinted_cooldown(rate_err, float(settings.LLM_RATE_LIMIT_COOLDOWN_SECONDS)),
+                    "a rate limit (429)",
+                )
+                break
+
+            except (ProviderUnavailableError, InvalidResponseError) as transient_err:
                 last_exception = transient_err
                 usage_tracker.record_error(provider.name, type(transient_err).__name__)
 
-                if attempt < self.max_retries:
-                    backoff = min(self.initial_backoff_seconds * (2 ** attempt), 2.0)
+                if isinstance(transient_err, ProviderUnavailableError) and self._is_overload_or_timeout(transient_err):
+                    if self._is_timeout(transient_err):
+                        usage_tracker.record_timeout(provider.name)
+                    else:
+                        self._start_cooldown(
+                            provider.name,
+                            self._hinted_cooldown(transient_err, float(settings.LLM_OVERLOAD_COOLDOWN_SECONDS)),
+                            "an overload response (503)",
+                        )
+                    logger.warning(
+                        f"{provider.name} overloaded or timed out [{type(transient_err).__name__}]; "
+                        "not retrying the same provider."
+                    )
+                    break
+
+                backoff = min(self.initial_backoff_seconds * (2 ** attempt), 2.0)
+                out_of_time = deadline is not None and time.monotonic() + backoff >= deadline
+                if attempt < retries and not out_of_time:
                     logger.warning(
                         f"{provider.name} transient error [{type(transient_err).__name__}]. "
-                        f"Retrying ({attempt + 1}/{self.max_retries}) after {backoff:.2f}s backoff..."
+                        f"Retrying ({attempt + 1}/{retries}) after {backoff:.2f}s backoff..."
                     )
                     time.sleep(backoff)
                 else:
                     logger.error(
-                        f"{provider.name} exceeded max retries ({self.max_retries}). "
-                        f"Final error: {transient_err}"
+                        f"{provider.name} gave up after {attempt + 1} attempt(s)"
+                        f"{' (time budget spent)' if out_of_time else ''}. Final error: {transient_err}"
                     )
+                    break
 
             except Exception as unhandled_err:
                 usage_tracker.record_error(provider.name, type(unhandled_err).__name__)
@@ -194,13 +305,46 @@ class ModelRouter:
             raise last_exception
         raise ProviderUnavailableError(f"Provider {provider.name} failed after retries.", provider=provider.name)
 
+    def _call_provider(
+        self,
+        provider: Any,
+        method_name: str,
+        args: tuple,
+        kwargs: Dict[str, Any],
+        max_retries: Optional[int],
+        deadline: Optional[float],
+    ) -> LLMResponse:
+        call_kwargs = dict(kwargs)
+        if deadline is not None:
+            # The provider's own HTTP timeout is the remaining budget, so the
+            # request ends when the caller stops waiting instead of running on
+            # in a background thread.
+            call_kwargs["timeout"] = max(1.0, deadline - time.monotonic())
+        return self._execute_with_retry(
+            provider, method_name, *args, max_retries=max_retries, deadline=deadline, **call_kwargs
+        )
+
+    def _primary_quota_elapsed(self) -> bool:
+        if self._primary_quota_since is None:
+            return False
+        window = self._primary_quota_seconds if self._primary_quota_seconds is not None else self.cooldown_seconds
+        return (time.monotonic() - self._primary_quota_since) >= window
+
     def _route_request(
         self,
         method_name: str,
         *args: Any,
+        single_shot: bool = False,
+        timeout: Optional[float] = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Central routing loop: Try Gemini -> On eligible failure switch to Groq -> On failure enter Degraded Mode."""
+        """Central routing loop: Try Gemini -> On eligible failure switch to Groq -> On failure enter Degraded Mode.
+
+        ``single_shot`` disables same-provider retries. ``timeout`` is a total
+        time budget in seconds for the whole request (both providers): each
+        provider call gets the remaining budget as its HTTP timeout, and the
+        fallback is skipped when too little budget is left.
+        """
         # Check if already in degraded mode (expires after the cooldown)
         if self.is_degraded_mode():
             logger.error("LLM reasoning requested while ModelRouter is in DEGRADED MODE.")
@@ -212,20 +356,44 @@ class ModelRouter:
                 provider="router",
             )
 
-        # 1. Attempt Primary Provider (Gemini) if not already marked unavailable
-        if self.gemini.status == ProviderStatus.QUOTA_EXHAUSTED and self._cooldown_elapsed(self._primary_quota_since):
+        deadline = time.monotonic() + float(timeout) if timeout else None
+        max_retries = 0 if single_shot else None
+
+        # 1. Attempt Primary Provider (Gemini) unless it is out of quota or cooling down
+        if self.gemini.status == ProviderStatus.QUOTA_EXHAUSTED and self._primary_quota_elapsed():
             logger.info("Primary quota cooldown elapsed; retrying the primary provider.")
             self.gemini.status = ProviderStatus.AVAILABLE
             self._primary_quota_since = None
-        if self.gemini.status != ProviderStatus.QUOTA_EXHAUSTED:
+            self._primary_quota_seconds = None
+        primary_wait = self.cooling_remaining(self.gemini.name)
+        primary_skipped = self.gemini.status == ProviderStatus.QUOTA_EXHAUSTED or primary_wait > 0
+        if primary_skipped:
+            logger.info(
+                f"Skipping primary LLM {self.gemini.name}: "
+                + ("quota exhausted" if self.gemini.status == ProviderStatus.QUOTA_EXHAUSTED
+                   else f"cooling down for {primary_wait:.0f}s more")
+                + f"; using {self.fallback.name}."
+            )
+        else:
             try:
                 logger.info(f"Routing request to primary LLM: {self.gemini.name} ({self.gemini.model})")
                 self.active_provider_name = self.gemini.name
-                return self._execute_with_retry(self.gemini, method_name, *args, **kwargs)
+                return self._call_provider(self.gemini, method_name, args, kwargs, max_retries, deadline)
             except (QuotaExceededError, RateLimitError, ProviderUnavailableError, InvalidResponseError,
                     ModelNotFoundError, BadRequestError) as gemini_err:
                 if isinstance(gemini_err, QuotaExceededError):
+                    self.gemini.status = ProviderStatus.QUOTA_EXHAUSTED
                     self._primary_quota_since = time.monotonic()
+                    hint = getattr(gemini_err, "retry_after", None) or parse_retry_after_seconds(gemini_err)
+                    # A short hint means a per-minute limit; no hint (daily quota) means the full cooldown.
+                    self._primary_quota_seconds = (
+                        min(float(hint), float(settings.LLM_RETRY_HINT_MAX_SECONDS)) if hint else None
+                    )
+                    usage_tracker.record_cooldown(
+                        self.gemini.name,
+                        self._primary_quota_seconds or self.cooldown_seconds,
+                        "quota exhausted",
+                    )
                 logger.warning(
                     f"Primary provider {self.gemini.name} failed: {gemini_err}. "
                     f"Initiating fallback to {self.fallback.name}."
@@ -259,11 +427,44 @@ class ModelRouter:
                 )
 
         # 2. Attempt Fallback Provider (Groq)
+        if deadline is not None and deadline - time.monotonic() < float(settings.LLM_MIN_FALLBACK_BUDGET_SECONDS):
+            # The caller's budget is spent: starting another request now would
+            # only produce an answer nobody waits for.
+            raise ProviderUnavailableError(
+                f"Time budget of {timeout:.0f}s spent before the fallback provider could be tried.",
+                provider="router",
+            )
+        fallback_wait = self.cooling_remaining(self.fallback.name)
+        if fallback_wait > 0:
+            # Temporary: not Degraded Mode, the cooldowns expire on their own.
+            logger.warning(
+                f"Fallback provider {self.fallback.name} is cooling down for {fallback_wait:.0f}s more; "
+                "no LLM provider can take this request right now."
+            )
+            raise DegradedModeError(
+                f"LLM providers are temporarily paused after rate limits ({self.fallback.name} "
+                f"resumes in about {fallback_wait:.0f}s). Reasoning steps fall back to rules meanwhile.",
+                provider="router",
+            )
         try:
             logger.info(f"Routing request to fallback LLM: {self.fallback.name} ({self.fallback.model})")
             self.active_provider_name = self.fallback.name
-            return self._execute_with_retry(self.fallback, method_name, *args, **kwargs)
+            return self._call_provider(self.fallback, method_name, args, kwargs, max_retries, deadline)
         except Exception as fallback_err:
+            if deadline is not None:
+                # A budgeted single request (tool proposal) failing is not
+                # evidence that both providers are down for two minutes.
+                raise
+            if isinstance(fallback_err, RateLimitError) and self.cooling_remaining(
+                self.fallback.name
+            ) > 0:
+                # The fallback is in a short, known cooldown; do not escalate
+                # to the long Degraded Mode pause for a per-minute limit.
+                raise DegradedModeError(
+                    f"Both Gemini and {self.fallback.name} are rate limited; requests resume in about "
+                    f"{self.cooling_remaining(self.fallback.name):.0f}s. Last error: {fallback_err}",
+                    provider="router",
+                ) from fallback_err
             logger.critical(
                 f"Fallback provider {self.fallback.name} also failed: {fallback_err}. "
                 "Entering DEGRADED MODE."
@@ -316,12 +517,16 @@ class ModelRouter:
         tools: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         temperature: float = 0.0,
+        single_shot: bool = False,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Route a function-calling request; ``structured_data`` is the proposed ``ToolCall``.
 
-        Same retry / Groq fallback / degraded-mode handling as ``generate``. A
-        response without a tool call, or with malformed arguments, is an
-        ``InvalidResponseError`` (retried, then falls back).
+        Same Groq fallback / cooldown handling as ``generate``. A response
+        without a tool call, or with malformed arguments, is an
+        ``InvalidResponseError``. Tool proposals pass ``single_shot=True`` and a
+        ``timeout`` budget: one attempt per provider, each bounded by what is
+        left of the budget, and no fallback once the budget is spent.
         """
         return self._route_request(
             "generate_tool_call",
@@ -329,6 +534,8 @@ class ModelRouter:
             tools,
             system_prompt=system_prompt,
             temperature=temperature,
+            single_shot=single_shot,
+            timeout=timeout,
         )
 
 

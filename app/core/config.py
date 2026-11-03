@@ -56,8 +56,22 @@ class Settings(BaseSettings):
     # LLM request limits
     LLM_TIMEOUT_SECONDS: float = 60.0
     LLM_DEGRADED_COOLDOWN_SECONDS: float = 120.0
+    # After a 429 / 503 the provider is skipped for a while instead of being
+    # retried seconds later. A provider's own "retry in Ns" hint is honoured,
+    # capped at LLM_RETRY_HINT_MAX_SECONDS.
+    LLM_RATE_LIMIT_COOLDOWN_SECONDS: float = 20.0
+    LLM_OVERLOAD_COOLDOWN_SECONDS: float = 15.0
+    LLM_RETRY_HINT_MAX_SECONDS: float = 30.0
+    # A budgeted request (tool proposal) does not start the fallback provider
+    # with less than this many seconds left.
+    LLM_MIN_FALLBACK_BUDGET_SECONDS: float = 3.0
+    # Pause LLM tool proposals for the rest of a run after this many
+    # consecutive failed or timed-out proposals.
+    TOOL_SELECTION_MAX_CONSECUTIVE_FAILURES: int = 2
     MAX_SEARCH_RESULTS: int = 20
     REQUEST_TIMEOUT_SECONDS: int = 30
+    # Semantic Scholar allows ~1 request/second without an API key.
+    SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS: float = 1.1
     ACADEMIC_MAX_RETRIES: int = 2
     ACADEMIC_INITIAL_BACKOFF_SECONDS: float = 1.0
 
