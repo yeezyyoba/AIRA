@@ -104,13 +104,18 @@ async def generate_research_comparison_report(
         ref_title = verified.get("title") or extracted_title or pid
         ref_authors = verified.get("authors") or extracted_authors or []
         citation = citations.get(pid) if isinstance(citations.get(pid), dict) else {}
+        ref_year = verified.get("year")
         references.append({
             "paper_id": pid,
+            "label": paper_label(pid, ref_title, ref_authors, ref_year),
             "title": ref_title,
             "authors": ref_authors,
+            "year": ref_year,
+            "doi": verified.get("doi") or citation.get("doi"),
             "page_count": p_obj.page_count if p_obj else 0,
             "citation_text": citation.get("citation_text"),
         })
+    labels = {ref["paper_id"]: ref["label"] for ref in references}
 
     is_degraded = llm.is_degraded_mode() if llm else False
 
@@ -120,7 +125,7 @@ async def generate_research_comparison_report(
         if dim.dimension_name in ("Research Objectives", "Methodology"):
             obj_meth_text += f"### {dim.dimension_name}\n"
             for pid, val in dim.values_by_paper.items():
-                obj_meth_text += f"- **{pid}**: {_excerpt(val) if val else 'Not explicitly documented in paper text'}\n"
+                obj_meth_text += f"- **{labels.get(pid, pid)}**: {_excerpt(val) if val else 'Not explicitly documented in paper text'}\n"
             if dim.differences_noted:
                 diffs = "; ".join(dim.differences_noted)
                 obj_meth_text += f"*Differences*: {diffs}\n\n"
@@ -130,7 +135,7 @@ async def generate_research_comparison_report(
         if dim.dimension_name in ("Datasets", "Dataset Sizes", "Languages Covered"):
             dataset_text += f"#### {dim.dimension_name}\n"
             for pid, val in dim.values_by_paper.items():
-                dataset_text += f"- **{pid}**: {_excerpt(val) if val else 'Not reported'}\n"
+                dataset_text += f"- **{labels.get(pid, pid)}**: {_excerpt(val) if val else 'Not reported'}\n"
             dataset_text += "\n"
 
     arch_text = "### Models & Algorithmic Architectures\n"
@@ -138,7 +143,7 @@ async def generate_research_comparison_report(
         if dim.dimension_name in ("Models and Algorithms", "Experimental Setup"):
             arch_text += f"#### {dim.dimension_name}\n"
             for pid, val in dim.values_by_paper.items():
-                arch_text += f"- **{pid}**: {_excerpt(val) if val else 'Not reported'}\n"
+                arch_text += f"- **{labels.get(pid, pid)}**: {_excerpt(val) if val else 'Not reported'}\n"
             arch_text += "\n"
 
     exp_text = "### Quantitative Results & Metric Comparisons\n"
@@ -152,11 +157,11 @@ async def generate_research_comparison_report(
                 exp_text += f"> **Trade-off Analysis**: {mt.trade_off_notes}\n\n"
 
             if mt.ranked_models:
-                exp_text += "| Rank | Paper ID | Model | Score | Delta | Evidence Page |\n"
+                exp_text += "| Rank | Paper | Model | Score | Delta | Evidence Page |\n"
                 exp_text += "|---|---|---|---|---|---|\n"
                 for r in mt.ranked_models:
                     page_str = f"Page {r['page_number']}" if r.get('page_number') is not None else "Page: Unspecified"
-                    exp_text += f"| {r['rank']} | {r['paper_id']} | {r['model_name']} | {r['score']} | {r['delta_from_best']} | {page_str} |\n"
+                    exp_text += f"| {r['rank']} | {labels.get(r['paper_id'], r['paper_id'])} | {r['model_name']} | {r['score']} | {r['delta_from_best']} | {page_str} |\n"
                 exp_text += "\n"
 
             if mt.missing_data_warnings:
@@ -169,7 +174,7 @@ async def generate_research_comparison_report(
 
     strengths_text = "### Strengths, Limitations & Artifact Availability Across Corpus\n"
     for pid, meth in methodologies.items():
-        strengths_text += f"#### Paper: {pid}\n"
+        strengths_text += f"#### {labels.get(pid, pid)}\n"
         if meth.artifact_availability:
             art = meth.artifact_availability
             strengths_text += f"- **Artifact Availability**: Code: {art.get('code_status', 'UNSPECIFIED')}"
@@ -216,6 +221,37 @@ async def generate_research_comparison_report(
         is_degraded=is_degraded,
         created_at=created_at,
     )
+
+
+def _last_name(author: str) -> str:
+    author = (author or "").strip()
+    if "," in author:
+        return author.split(",")[0].strip()
+    parts = author.split()
+    return parts[-1] if parts else ""
+
+
+def paper_label(pid: str, title: Optional[str] = None, authors: Optional[List[str]] = None,
+                year: Optional[int] = None) -> str:
+    """Human-readable short name for a paper: "Muhammad et al., 2022".
+
+    Paper IDs are usually DOIs, which readers cannot tell apart. Falls back to
+    a shortened title, then to the ID itself; nothing is invented.
+    """
+    names = [a for a in (authors or []) if a and a.strip()]
+    if len(names) == 1:
+        who = _last_name(names[0])
+    elif len(names) == 2:
+        who = f"{_last_name(names[0])} & {_last_name(names[1])}"
+    elif len(names) > 2:
+        who = f"{_last_name(names[0])} et al."
+    else:
+        who = ""
+    if who:
+        return f"{who}, {year}" if year else who
+    if title and title != pid:
+        return title if len(title) <= 48 else title[:45].rstrip() + "…"
+    return pid
 
 
 EXCERPT_CHARS = 450
@@ -286,6 +322,17 @@ def _evidence_backed_conclusions(
 def export_report_markdown(report: ResearchComparisonReportSchema) -> str:
     """Export comparison report to a structured, publication-ready Markdown document."""
     md = []
+    labels = {
+        ref.get("paper_id"): ref.get("label") or paper_label(ref.get("paper_id"), ref.get("title"), ref.get("authors"), ref.get("year"))
+        for ref in report.references if ref.get("paper_id")
+    }
+
+    def relabel(text: str) -> str:
+        for pid, label in labels.items():
+            if pid and pid in text:
+                text = text.replace(pid, label)
+        return text
+
     md.append(f"# {report.title or ('Research Comparison Report: ' + report.research_question)}\n")
     if report.report_status and report.report_status != "COMPLETE":
         md.append(f"> **Status**: {report.report_status} — sections marked 'Not established' lack sufficient evidence.\n")
@@ -299,35 +346,37 @@ def export_report_markdown(report: ResearchComparisonReportSchema) -> str:
     md.append("## 2. Papers Analyzed")
     for ref in report.references:
         authors = ", ".join(ref.get("authors", [])) if isinstance(ref.get("authors"), list) else str(ref.get("authors"))
-        md.append(f"- **{ref.get('paper_id')}**: *{ref.get('title')}* ({authors or 'authors not reported'}) [{ref.get('page_count', 0)} pages]")
+        label = ref.get("label") or paper_label(ref.get("paper_id"), ref.get("title"), ref.get("authors"), ref.get("year"))
+        doi = f" — https://doi.org/{ref['doi']}" if ref.get("doi") else ""
+        md.append(f"- **{label}**: *{ref.get('title')}* ({authors or 'authors not reported'}) [{ref.get('page_count', 0)} pages]{doi}")
     md.append("")
 
     md.append("## 3. Comparison of Objectives and Methodologies")
-    md.append(report.objectives_and_methodology_comparison)
+    md.append(relabel(report.objectives_and_methodology_comparison))
     md.append("")
 
     md.append("## 4. Dataset Comparison")
-    md.append(report.dataset_comparison)
+    md.append(relabel(report.dataset_comparison))
     md.append("")
 
     md.append("## 5. Model & Architecture Comparison")
-    md.append(report.model_architecture_comparison)
+    md.append(relabel(report.model_architecture_comparison))
     md.append("")
 
     md.append("## 6. Experimental Results Comparison")
-    md.append(report.experimental_results_comparison)
+    md.append(relabel(report.experimental_results_comparison))
     md.append("")
 
     md.append("## 7. Strengths and Limitations")
-    md.append(report.strengths_and_limitations)
+    md.append(relabel(report.strengths_and_limitations))
     md.append("")
 
     md.append("## 8. Identified Research Gaps")
     if report.research_gaps:
         for g in report.research_gaps:
-            md.append(f"### [{g.gap_type.value}] {g.title}")
+            md.append(f"### [{g.gap_type.value}] {relabel(g.title)}")
             md.append(f"{g.description}\n")
-            sup_papers = ", ".join(g.supporting_papers)
+            sup_papers = ", ".join(labels.get(p, p) for p in g.supporting_papers)
             md.append(f"- **Supporting Papers**: {sup_papers}")
             if g.suggested_direction:
                 md.append(f"- **Suggested Direction**: {g.suggested_direction}")
@@ -335,17 +384,17 @@ def export_report_markdown(report: ResearchComparisonReportSchema) -> str:
                 md.append("- **Evidence Citations**:")
                 for ev in g.evidence:
                     page_str = f"Page {ev.page_number}" if ev.page_number is not None else "Page: Unspecified"
-                    md.append(f"  - *{ev.paper_id} ({page_str})*: \"{ev.passage}\"")
+                    md.append(f"  - *{labels.get(ev.paper_id, ev.paper_id)} ({page_str})*: \"{ev.passage}\"")
             md.append("")
     else:
         md.append("No prominent research gaps identified across the specified corpus.\n")
 
     md.append("## 9. Evidence-Backed Conclusions")
-    md.append(report.evidence_backed_conclusions)
+    md.append(relabel(report.evidence_backed_conclusions))
     md.append("")
 
     md.append("## 10. Missing Information & Limitations of the Analysis")
-    md.append(report.limitations_of_analysis)
+    md.append(relabel(report.limitations_of_analysis))
     md.append("")
 
     md.append("## 11. References to Original Papers")
@@ -353,7 +402,7 @@ def export_report_markdown(report: ResearchComparisonReportSchema) -> str:
         if ref.get("citation_text"):
             md.append(f"[{idx}] {ref['citation_text']}")
         else:
-            md.append(f"[{idx}] **{ref.get('paper_id')}**: {ref.get('title')}. Pages: {ref.get('page_count', 0)}.")
+            md.append(f"[{idx}] **{labels.get(ref.get('paper_id'), ref.get('paper_id'))}**: {ref.get('title')}. Pages: {ref.get('page_count', 0)}.")
     md.append("")
 
     md.append("---")

@@ -148,3 +148,42 @@ async def test_report_conclusions_are_grounded_not_generic(tmp_path):
     report = await generate_research_comparison_report(["a", "b"], "ASR on LibriSpeech", repository=repo, router=router)
     assert "domain-specific efficacy" not in report.evidence_backed_conclusions
     assert report.title and report.report_status == "COMPLETE"
+
+
+# --- Readable paper labels -------------------------------------------------------
+
+def test_paper_label_formats():
+    from services.report_service import paper_label
+
+    assert paper_label("10.1/x", "T", ["Shamsuddeen Hassan Muhammad", "David Adelani", "Sebastian Ruder"], 2022) == "Muhammad et al., 2022"
+    assert paper_label("10.1/x", "T", ["Dang Van Thin", "Dai Nguyen"], 2023) == "Thin & Nguyen, 2023"
+    assert paper_label("10.1/x", "T", ["Muhammad, S. H."], None) == "Muhammad"
+    assert paper_label("10.1/x", "Sentiment Analysis Across Multiple African Languages: A Current Benchmark", [], None).endswith("…")
+    assert paper_label("10.1/x", None, [], None) == "10.1/x"
+
+
+@pytest.mark.anyio
+async def test_markdown_report_names_papers_not_dois(tmp_path):
+    from services.report_service import export_report_markdown, generate_research_comparison_report
+    from validation.schemas import ExtractedPaperDataSchema
+
+    repo = PaperRepository(storage_dir=str(tmp_path))
+    meta = {}
+    for pid, author, year in (("10.18653/v1/a", "Ada Lovelace", 2021), ("10.18653/v1/b", "Alan Turing", 2022)):
+        repo.save_paper(PaperExtractionResultSchema(
+            paper_id=pid, status=ExtractionStatus.SUCCESS, extraction_method="pymupdf", page_count=4,
+            extracted_data=ExtractedPaperDataSchema(paper_id=pid, title=f"Paper by {author}",
+                                                    methodology="We fine-tune a transformer.", dataset="AfriSenti"),
+        ))
+        meta[pid] = {"title": f"Paper by {author}", "authors": [author], "year": year, "doi": pid}
+    router = MagicMock()
+    router.is_degraded_mode.return_value = True
+    report = await generate_research_comparison_report(
+        ["10.18653/v1/a", "10.18653/v1/b"], "transformers", repository=repo, router=router,
+        precomputed={"paper_metadata": meta},
+    )
+    md = export_report_markdown(report)
+    assert "**Lovelace, 2021**" in md and "**Turing, 2022**" in md
+    body = md.split("## 11.")[0]
+    assert "**10.18653/v1/a**" not in body
+    assert "https://doi.org/10.18653/v1/a" in md
