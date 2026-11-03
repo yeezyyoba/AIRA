@@ -430,7 +430,7 @@ Potential improvements include:
 
 ## 12. License
 
-Add the appropriate license information here before distributing the project publicly.
+No license!
 
 ---
 
