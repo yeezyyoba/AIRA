@@ -52,6 +52,14 @@ export const ExecutionProgress: React.FC<ExecutionProgressProps> = ({
         return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs px-3 py-1 rounded-full font-mono font-semibold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> CLARIFICATION NEEDED</span>;
       case "MAX_STEPS_REACHED":
         return <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 text-xs px-3 py-1 rounded-full font-mono font-semibold">MAX STEPS REACHED</span>;
+      case "PARTIAL":
+        return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs px-3 py-1 rounded-full font-mono font-semibold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> PARTIAL RESULT</span>;
+      case "INSUFFICIENT_EVIDENCE":
+        return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs px-3 py-1 rounded-full font-mono font-semibold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> INSUFFICIENT EVIDENCE</span>;
+      case "OUT_OF_SCOPE":
+        return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-xs px-3 py-1 rounded-full font-mono font-semibold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> OUT OF SCOPE</span>;
+      case "UNACCEPTABLE_RISK":
+        return <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 text-xs px-3 py-1 rounded-full font-mono font-semibold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> REFUSED (SAFETY)</span>;
       case "RETRY_REQUESTED":
         return <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/30 text-xs px-3 py-1 rounded-full font-mono font-semibold flex items-center gap-1.5 animate-pulse"><RefreshCw className="w-3.5 h-3.5" /> RETRY IN PROGRESS</span>;
       default:

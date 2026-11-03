@@ -1,8 +1,11 @@
 """Research Sessions and Analysis API Endpoints."""
+import asyncio
+import json
 from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 
 from app.schemas.research import (
     ExperimentalResultsRequest,
@@ -16,6 +19,7 @@ from app.schemas.research import (
 from agents.graph import build_research_graph
 from app.api.v1.endpoints.reports import _REPORTS_STORE, _SESSION_REPORTS
 from app.core.config import settings
+from app.core.session_events import current_session_id, event_bus, install_session_log_handler
 from logging_config.logger import get_logger
 from langgraph.checkpoint.memory import MemorySaver
 from tools.gap_identifier import identify_research_gaps
@@ -38,6 +42,31 @@ logger = get_logger("api.research")
 # reports are additionally persisted to disk by the report node.
 _api_checkpointer = MemorySaver()
 _shared_graph = build_research_graph(checkpointer=_api_checkpointer)
+
+install_session_log_handler()
+
+# Background runs: strong references keep the tasks alive; failures are kept
+# so polling clients see FAILED instead of a session that never finishes.
+_BACKGROUND_TASKS: Dict[str, "asyncio.Task[Any]"] = {}
+_FAILED_RUNS: Dict[str, str] = {}
+_SESSION_QUERIES: Dict[str, str] = {}
+
+_NODE_LABELS = {
+    "receive_request": "Received research request",
+    "analyze_goal": "Analyzed research goal",
+    "check_information": "Checked whether the request has enough information",
+    "ask_user": "Paused to ask for clarification",
+    "create_plan": "Created research plan",
+    "select_tools": "Selected next tools",
+    "execute_tools": "Executed tools",
+    "validate_tool_outputs": "Validated tool outputs",
+    "retry_handler": "Handled retry",
+    "store_evidence": "Stored evidence",
+    "reflect_and_revise": "Reflected on progress",
+    "critique_findings": "Critiqued findings",
+    "generate_report": "Generated report",
+    "finish_task": "Finished",
+}
 
 
 def _graph_config(session_id: str) -> Dict[str, Any]:
@@ -79,6 +108,7 @@ def _build_response(values: Dict[str, Any], session_id: str, default_status: str
         research_goal=values.get("research_goal") or query or "",
         query=values.get("query") or query,
         clarification_question=values.get("clarification_question"),
+        message=values.get("user_message"),
         missing_information=values.get("missing_information"),
         plan=values.get("research_plan"),
         final_report=values.get("final_report"),
@@ -97,15 +127,108 @@ def _build_response(values: Dict[str, Any], session_id: str, default_status: str
     )
 
 
+def _publish_node_update(session_id: str, node: str, update: Any, seen_logs: List[int]) -> None:
+    """Turn one graph step into live-log events."""
+    event_bus.publish(session_id, _NODE_LABELS.get(node, node), kind="node", source=node)
+    if not isinstance(update, dict):
+        return
+    logs = update.get("observable_logs")
+    if isinstance(logs, list) and len(logs) > seen_logs[0]:
+        for entry in logs[seen_logs[0]:]:
+            if not isinstance(entry, dict):
+                continue
+            outcome = str(entry.get("outcome") or "")
+            level = "ERROR" if outcome in ("FAILURE", "FAILED", "ERROR") else "WARNING" if outcome in ("PARTIAL", "RETRY", "DEGRADED") else "INFO"
+            tool = entry.get("tool")
+            message = entry.get("decision") or ""
+            if tool:
+                message = f"[{tool}] {message}"
+            event_bus.publish(
+                session_id,
+                message,
+                kind="decision",
+                level=level,
+                source=entry.get("node") or node,
+                data={"step": entry.get("step"), "outcome": outcome or None},
+            )
+        seen_logs[0] = len(logs)
+
+
 async def _run_graph(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    config = _graph_config(session_id)
+    token = current_session_id.set(session_id)
+    event_bus.start(session_id)
     try:
-        return await _shared_graph.ainvoke(payload, config=_graph_config(session_id))
+        snapshot = await _shared_graph.aget_state(config)
+        seen_logs = [len((snapshot.values or {}).get("observable_logs", []) or [])] if snapshot else [0]
+        async for chunk in _shared_graph.astream(payload, config=config, stream_mode="updates"):
+            if not isinstance(chunk, dict):
+                continue
+            for node, update in chunk.items():
+                if node.startswith("__"):
+                    continue
+                _publish_node_update(session_id, node, update, seen_logs)
+        final = await _shared_graph.aget_state(config)
+        values = dict(final.values or {})
+        event_bus.publish(
+            session_id,
+            f"Run ended: {values.get('stopping_reason') or 'COMPLETED'}",
+            kind="status",
+            source="workflow",
+        )
+        return values
     except Exception as exc:
         logger.exception("Research workflow for session '%s' crashed.", session_id)
+        event_bus.publish(
+            session_id,
+            f"Workflow crashed ({type(exc).__name__}): {exc}",
+            kind="status",
+            level="ERROR",
+            source="workflow",
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Research workflow failed unexpectedly ({type(exc).__name__}). See server logs for session '{session_id}'.",
         ) from exc
+    finally:
+        event_bus.finish(session_id)
+        current_session_id.reset(token)
+
+
+async def _run_and_register(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+    final_state = await _run_graph(payload, session_id)
+    _register_report_if_present(final_state.get("final_report"), session_id=session_id)
+    return final_state
+
+
+def _launch_background(payload: Dict[str, Any], session_id: str) -> None:
+    """Run the workflow without holding the HTTP request open."""
+    _FAILED_RUNS.pop(session_id, None)
+    # Mark running before returning so pollers and the event stream never see
+    # a gap between the response and the task's first step.
+    event_bus.start(session_id)
+
+    async def runner() -> None:
+        try:
+            await _run_and_register(payload, session_id)
+        except HTTPException as exc:
+            _FAILED_RUNS[session_id] = str(exc.detail)
+        except Exception as exc:  # pragma: no cover - _run_graph wraps errors
+            _FAILED_RUNS[session_id] = f"{type(exc).__name__}: {exc}"
+        finally:
+            event_bus.finish(session_id)
+            _BACKGROUND_TASKS.pop(session_id, None)
+
+    _BACKGROUND_TASKS[session_id] = asyncio.create_task(runner())
+
+
+def _in_progress_response(session_id: str, values: Optional[Dict[str, Any]] = None) -> ResearchResponse:
+    values = values or {}
+    response = _build_response(values, session_id, "IN_PROGRESS", query=_SESSION_QUERIES.get(session_id))
+    # Mid-run the graph may already hold a provisional stopping reason (e.g.
+    # GOAL_ACHIEVED before the report node runs); clients must keep polling.
+    response.status = "IN_PROGRESS"
+    return response
 
 
 @router.post("/sessions", response_model=ResearchResponse, tags=["Research"])
@@ -123,8 +246,11 @@ async def start_research_session(request: ResearchRequest) -> ResearchResponse:
         "year_to": request.year_to,
         "max_steps": settings.MAX_AGENT_STEPS,
     }
-    final_state = await _run_graph(initial_state, session_id)
-    _register_report_if_present(final_state.get("final_report"), session_id=session_id)
+    _SESSION_QUERIES[session_id] = request.query
+    if request.run_in_background:
+        _launch_background(initial_state, session_id)
+        return _in_progress_response(session_id, {"session_id": session_id, "query": request.query, "research_goal": request.query})
+    final_state = await _run_and_register(initial_state, session_id)
     return _build_response(final_state, session_id, "COMPLETED", query=request.query)
 
 
@@ -132,9 +258,17 @@ async def start_research_session(request: ResearchRequest) -> ResearchResponse:
 async def get_research_session(session_id: str) -> ResearchResponse:
     """Retrieve current state and inspection details of an active or paused research session."""
     state_snapshot = await _shared_graph.aget_state({"configurable": {"thread_id": session_id}})
-    if not state_snapshot or not state_snapshot.values:
+    values = state_snapshot.values if state_snapshot else None
+    if event_bus.is_running(session_id):
+        return _in_progress_response(session_id, values)
+    if session_id in _FAILED_RUNS:
+        response = _build_response(values or {}, session_id, "FAILED", query=_SESSION_QUERIES.get(session_id))
+        response.status = "FAILED"
+        response.message = _FAILED_RUNS[session_id]
+        return response
+    if not values:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Research session '{session_id}' not found.")
-    return _build_response(state_snapshot.values, session_id, "IN_PROGRESS")
+    return _build_response(values, session_id, "IN_PROGRESS")
 
 
 @router.post("/sessions/{session_id}/resume", response_model=ResearchResponse, tags=["Research"])
@@ -143,6 +277,9 @@ async def resume_research_session(session_id: str, request: ResearchResumeReques
     state_snapshot = await _shared_graph.aget_state({"configurable": {"thread_id": session_id}})
     if not state_snapshot or not state_snapshot.values:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Research session '{session_id}' not found.")
+
+    if event_bus.is_running(session_id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Session '{session_id}' is already running.")
 
     current_values = state_snapshot.values
     if current_values.get("stopping_reason") != "USER_CLARIFICATION_REQUIRED":
@@ -158,9 +295,52 @@ async def resume_research_session(session_id: str, request: ResearchResumeReques
         "stopping_reason": None,
         "max_steps": settings.MAX_AGENT_STEPS,
     }
-    final_state = await _run_graph(resume_input, session_id)
-    _register_report_if_present(final_state.get("final_report"), session_id=session_id)
+    if request.run_in_background:
+        _launch_background(resume_input, session_id)
+        return _in_progress_response(session_id, current_values)
+    final_state = await _run_and_register(resume_input, session_id)
     return _build_response(final_state, session_id, "COMPLETED")
+
+
+@router.get("/sessions/{session_id}/events", tags=["Research"])
+async def stream_session_events(
+    session_id: str,
+    request: Request,
+    after: int = Query(0, ge=0, description="Only send events with a sequence number above this"),
+    last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    """Stream a session's live event log as Server-Sent Events.
+
+    Sends buffered events first, then new ones as the run produces them, and
+    an ``end`` event once the run is no longer active.
+    """
+    cursor = after
+    if last_event_id and last_event_id.isdigit():
+        cursor = max(cursor, int(last_event_id))
+
+    async def event_source():
+        nonlocal cursor
+        idle_ticks = 0
+        while True:
+            if await request.is_disconnected():
+                return
+            events = event_bus.events_since(session_id, cursor)
+            for event in events:
+                cursor = event["seq"]
+                yield f"id: {cursor}\nevent: log\ndata: {json.dumps(event, default=str)}\n\n"
+            if not events and not event_bus.is_running(session_id):
+                yield "event: end\ndata: {}\n\n"
+                return
+            idle_ticks = 0 if events else idle_ticks + 1
+            if idle_ticks and idle_ticks % 30 == 0:
+                yield ": keep-alive\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/compare", response_model=PaperComparisonSchema, tags=["Research"])

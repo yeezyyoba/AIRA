@@ -141,6 +141,8 @@ export interface ResearchResponse {
   research_goal: string;
   query?: string;
   clarification_question?: string | null;
+  /** Why a request was refused (OUT_OF_SCOPE / UNACCEPTABLE_RISK). */
+  message?: string | null;
   missing_information?: string[] | null;
   plan?: ResearchPlanTask[] | null;
   final_report?: ResearchComparisonReport | null;
@@ -175,4 +177,15 @@ export interface SystemHealth {
   primary_llm?: string;
   fallback_llm?: string;
   degraded_mode?: boolean;
+}
+
+/** One entry of a session's live event log (streamed over SSE). */
+export interface SessionEvent {
+  seq: number;
+  timestamp: string;
+  kind: "node" | "decision" | "log" | "status" | string;
+  level: "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL" | string;
+  source?: string | null;
+  message: string;
+  data?: Record<string, unknown>;
 }

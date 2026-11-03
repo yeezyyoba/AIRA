@@ -71,5 +71,6 @@ class ResearchState(TypedDict, total=False):
 
     # Clarification flow
     missing_information: List[str]
+    user_message: Optional[str]
     clarification_question: Optional[str]
     clarification_response: Optional[str]

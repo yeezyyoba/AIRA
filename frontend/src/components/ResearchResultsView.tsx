@@ -24,6 +24,7 @@ import {
   CitationValue,
 } from "@/types/aira";
 import { airaApi } from "@/services/api";
+import { MarkdownText } from "./MarkdownText";
 
 interface ResearchResultsViewProps {
   report?: ResearchComparisonReport | null;
@@ -107,6 +108,21 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
     });
     return out;
   };
+
+  const knownPaperIds = Array.from(
+    new Set([...Object.keys(paperInfo), ...(report?.papers_analyzed || [])])
+  ).sort((a, b) => b.length - a.length);
+  const relabel = (text: string) => withLabels(text, knownPaperIds);
+
+  const reportSections = [
+    { title: "Comparative Methodology & Objectives", body: report?.objectives_and_methodology_comparison, heading: "text-cyan-300", dot: "bg-cyan-400", box: "bg-slate-950/70 border-slate-800/80" },
+    { title: "Dataset Benchmarks & Data Partitions", body: report?.dataset_comparison, heading: "text-emerald-300", dot: "bg-emerald-400", box: "bg-slate-950/70 border-slate-800/80" },
+    { title: "Model & Neural Architectures", body: report?.model_architecture_comparison, heading: "text-indigo-300", dot: "bg-indigo-400", box: "bg-slate-950/70 border-slate-800/80" },
+    { title: "Experimental Results & Benchmark Evaluation", body: report?.experimental_results_comparison, heading: "text-cyan-300", dot: "bg-cyan-400", box: "bg-slate-950/70 border-slate-800/80" },
+    { title: "Empirical Strengths & Methodological Limitations", body: report?.strengths_and_limitations, heading: "text-amber-300", dot: "bg-amber-400", box: "bg-slate-950/70 border-slate-800/80" },
+    { title: "Evidence-Backed Synthesis & Conclusions", body: report?.evidence_backed_conclusions, heading: "text-emerald-300", dot: "bg-emerald-400", box: "bg-slate-950/70 border-slate-800/80" },
+    { title: "Scope Boundaries & Limitations of the Analysis", body: report?.limitations_of_analysis, heading: "text-amber-400", dot: "bg-amber-400", box: "bg-amber-950/20 border-amber-800/40" },
+  ];
 
   const citationRows: { pid: string; text: string; doi?: string | null; style?: string }[] =
     Object.keys(citations || {}).length > 0
@@ -265,108 +281,29 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
             </div>
 
             {report ? (
-              <div className="space-y-6 text-sm leading-relaxed text-slate-300">
+              <div className="space-y-10">
                 {/* Executive Summary */}
                 {report.executive_summary && (
-                  <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 border border-indigo-500/20 shadow-md space-y-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 block">
+                  <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 border border-indigo-500/20 shadow-md space-y-3">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-400 block">
                       Executive Summary
                     </span>
-                    <p className="text-slate-100 leading-relaxed font-sans text-sm">
-                      {report.executive_summary}
-                    </p>
+                    <MarkdownText text={report.executive_summary} relabel={relabel} className="text-slate-100" />
                   </div>
                 )}
 
-                {/* Objectives & Methodology */}
-                {report.objectives_and_methodology_comparison && (
-                  <div className="space-y-2.5">
-                    <h4 className="text-sm font-bold text-cyan-300 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-cyan-400" />
-                      Comparative Methodology & Objectives
-                    </h4>
-                    <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800/80 whitespace-pre-line text-slate-300 leading-relaxed font-sans text-sm">
-                      {report.objectives_and_methodology_comparison}
-                    </div>
-                  </div>
-                )}
-
-                {/* Dataset Comparison */}
-                {report.dataset_comparison && (
-                  <div className="space-y-2.5">
-                    <h4 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                      Dataset Benchmarks & Data Partitions
-                    </h4>
-                    <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800/80 whitespace-pre-line text-slate-300 leading-relaxed font-sans text-sm">
-                      {report.dataset_comparison}
-                    </div>
-                  </div>
-                )}
-
-                {/* Model Architecture */}
-                {report.model_architecture_comparison && (
-                  <div className="space-y-2.5">
-                    <h4 className="text-sm font-bold text-indigo-300 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-indigo-400" />
-                      Model & Neural Architectures
-                    </h4>
-                    <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800/80 whitespace-pre-line text-slate-300 leading-relaxed font-sans text-sm">
-                      {report.model_architecture_comparison}
-                    </div>
-                  </div>
-                )}
-
-                {/* Results Comparison */}
-                {report.experimental_results_comparison && (
-                  <div className="space-y-2.5">
-                    <h4 className="text-sm font-bold text-cyan-300 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-cyan-400" />
-                      Experimental Results & Benchmark Evaluation
-                    </h4>
-                    <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800/80 whitespace-pre-line text-slate-300 leading-relaxed font-sans text-sm">
-                      {report.experimental_results_comparison}
-                    </div>
-                  </div>
-                )}
-
-                {/* Strengths & Limitations */}
-                {report.strengths_and_limitations && (
-                  <div className="space-y-2.5">
-                    <h4 className="text-sm font-bold text-amber-300 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-amber-400" />
-                      Empirical Strengths & Methodological Limitations
-                    </h4>
-                    <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800/80 whitespace-pre-line text-slate-300 leading-relaxed font-sans text-sm">
-                      {report.strengths_and_limitations}
-                    </div>
-                  </div>
-                )}
-
-                {/* Evidence Backed Conclusions */}
-                {report.evidence_backed_conclusions && (
-                  <div className="space-y-2.5">
-                    <h4 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                      Evidence-Backed Synthesis & Conclusions
-                    </h4>
-                    <div className="bg-slate-950/70 p-5 rounded-2xl border border-slate-800/80 whitespace-pre-line text-slate-300 leading-relaxed font-sans text-sm">
-                      {report.evidence_backed_conclusions}
-                    </div>
-                  </div>
-                )}
-
-                {/* Scope Boundaries */}
-                {report.limitations_of_analysis && (
-                  <div className="space-y-2.5">
-                    <h4 className="text-sm font-bold text-amber-400 flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4 text-amber-400" />
-                      Scope Boundaries & Limitations of the Analysis
-                    </h4>
-                    <div className="bg-amber-950/20 p-5 rounded-2xl border border-amber-800/40 whitespace-pre-line text-amber-200/90 text-xs leading-relaxed font-sans">
-                      {report.limitations_of_analysis}
-                    </div>
-                  </div>
+                {reportSections.map((section) =>
+                  section.body ? (
+                    <section key={section.title} className="space-y-4">
+                      <h4 className={`text-lg font-bold flex items-center gap-2.5 ${section.heading}`}>
+                        <span className={`w-2.5 h-2.5 rounded-full ${section.dot}`} />
+                        {section.title}
+                      </h4>
+                      <div className={`p-6 sm:p-7 rounded-2xl border ${section.box}`}>
+                        <MarkdownText text={section.body} relabel={relabel} />
+                      </div>
+                    </section>
+                  ) : null
                 )}
               </div>
             ) : (
@@ -411,10 +348,10 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                     <div key={i} className="p-5 rounded-2xl bg-slate-950 border border-slate-800 space-y-3 shadow-sm hover:border-slate-700 transition-colors">
                       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                         <div className="space-y-1">
-                          <h4 className="text-sm font-bold text-white tracking-tight leading-snug">
+                          <h4 className="text-base font-semibold text-white leading-snug">
                             {paper.title}
                           </h4>
-                          <p className="text-xs text-slate-400">
+                          <p className="text-sm text-slate-400 leading-6">
                             {paper.authors?.join(", ") || "Authors not listed"} • Year: {paper.year || "n.d."} {paper.venue ? `• ${paper.venue}` : ""}
                           </p>
                         </div>
@@ -437,7 +374,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                       </div>
 
                       {paper.abstract && (
-                        <p className="text-xs text-slate-400 line-clamp-3 leading-relaxed border-t border-slate-900 pt-2.5">
+                        <p className="text-sm text-slate-400 line-clamp-4 leading-6 border-t border-slate-900 pt-3">
                           {paper.abstract}
                         </p>
                       )}
@@ -617,7 +554,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                     : "bg-indigo-500/10 text-indigo-400 border-indigo-500/30";
 
                   return (
-                    <div key={idx} className="p-5 rounded-2xl bg-slate-950 border border-slate-800 space-y-3.5 shadow-sm">
+                    <div key={idx} className="p-6 rounded-2xl bg-slate-950 border border-slate-800 space-y-4 shadow-sm">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border uppercase tracking-wider ${gapBadgeClass}`}>
                           {gapTypeLabel}
@@ -641,8 +578,8 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                         </h4>
                       )}
 
-                      <p className="text-xs text-slate-200 leading-relaxed font-sans">
-                        {g.description}
+                      <p className="text-[15px] text-slate-200 leading-7">
+                        {relabel(g.description || "")}
                       </p>
 
                       {/* Direct Verbatim Evidence Passages */}
@@ -653,8 +590,8 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                           </span>
                           <div className="space-y-2">
                             {g.evidence.map((ev, eIdx) => (
-                              <div key={eIdx} className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-xs space-y-1.5">
-                                <p className="italic text-slate-300 font-serif leading-relaxed">
+                              <div key={eIdx} className="bg-slate-900/80 p-4 rounded-xl border border-slate-800 text-sm space-y-2.5">
+                                <p className="italic text-slate-300 font-serif leading-7">
                                   &ldquo;{ev.passage}&rdquo;
                                 </p>
                                 <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 pt-0.5 border-t border-slate-800/60">
@@ -672,7 +609,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                       )}
 
                       {(g.suggested_direction || g.suggested_future_work) && (
-                        <div className="text-xs text-cyan-300 bg-cyan-950/20 border border-cyan-800/30 p-3 rounded-xl">
+                        <div className="text-sm leading-6 text-cyan-300 bg-cyan-950/20 border border-cyan-800/30 p-4 rounded-xl">
                           <strong className="text-cyan-200">Recommended Research Direction:</strong> {g.suggested_direction || g.suggested_future_work}
                         </div>
                       )}
@@ -710,7 +647,7 @@ export const ResearchResultsView: React.FC<ResearchResultsViewProps> = ({
                       <span className="text-[10px] font-mono text-indigo-400 font-bold block">
                         {paperLabel(pid)}{style ? ` · ${style}` : ""}
                       </span>
-                      <p className="text-xs text-slate-300 font-serif leading-relaxed break-words">{text}</p>
+                      <p className="text-sm text-slate-300 font-serif leading-6 break-words">{text}</p>
                       {doi && (
                         <a
                           href={`https://doi.org/${doi}`}

@@ -60,10 +60,10 @@ export const airaApi = {
   /**
    * Start a new research session
    */
-  async startSession(query: string): Promise<ResearchResponse> {
+  async startSession(query: string, runInBackground = true): Promise<ResearchResponse> {
     return request<ResearchResponse>("/api/v1/research/sessions", {
       method: "POST",
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, run_in_background: runInBackground }),
     });
   },
 
@@ -77,11 +77,18 @@ export const airaApi = {
   /**
    * Resume a paused session with clarification
    */
-  async resumeSession(sessionId: string, clarificationResponse: string): Promise<ResearchResponse> {
+  async resumeSession(sessionId: string, clarificationResponse: string, runInBackground = true): Promise<ResearchResponse> {
     return request<ResearchResponse>(`/api/v1/research/sessions/${sessionId}/resume`, {
       method: "POST",
-      body: JSON.stringify({ clarification_response: clarificationResponse }),
+      body: JSON.stringify({ clarification_response: clarificationResponse, run_in_background: runInBackground }),
     });
+  },
+
+  /**
+   * Server-Sent Events URL for a session's live event log
+   */
+  getSessionEventsUrl(sessionId: string): string {
+    return `${API_BASE_URL}/api/v1/research/sessions/${encodeURIComponent(sessionId)}/events`;
   },
 
   /**

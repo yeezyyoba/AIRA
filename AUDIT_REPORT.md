@@ -57,6 +57,9 @@ The run also exposed four defects, all fixed:
 | 30 | Second live run ("Amharic sentiment … AfriSenti"): only 1 of 5 extracted papers was about Amharic, because extraction followed the search API's citation order. | Extraction candidates are ranked by query-keyword relevance (title + abstract), then validation confidence. |
 | 31 | The same report was 1,374 lines: whole raw PDF sections were pasted into comparison sections. | Report sections show bounded excerpts (~450 chars); full text stays in the repository/JSON. |
 | 32 | Third live run (98 steps, real Gemini embeddings): the conclusions claimed a "best WER of 6.0" for a sentiment paper. The metric regexes had no word boundaries, so "checkpoints⁶ were" was read as "6 WER" (also "lower", "answer", "cancer"). | Metric names and values are anchored at word boundaries; "BLEU score of X" phrasing is now supported. Verified on the cached papers from that run. |
+| 33 | No research-scope check: "who won the World Cup", "tell me a joke" or "write my cover letter" ran the full ~100-step research workflow (and were all labelled "Machine Learning"). | Keyword-based scope check in `meta_tools/ask_user.py` before any tool runs: language research proceeds; AI/ML topics without a language angle get a clarification question; anything else stops with the new status `OUT_OF_SCOPE` and an explanatory `message`. |
+| 34 | Frontend: `PARTIAL` and `UNACCEPTABLE_RISK` were missing from the terminal-status list, so the UI polled those sessions forever and showed a spinning "in progress" badge. | Added them (and `OUT_OF_SCOPE`) as terminal statuses with their own badges, plus a banner explaining refused requests. |
+| 35 | Verifiable Citations tab crashed (citations are objects since the audit) and papers were identified only by DOI. | Citations normalised to text; papers shown as "First author et al., year" with the full title, in the UI and the Markdown report. |
 
 ## 2. Test expectations corrected (with reasons)
 
@@ -77,7 +80,7 @@ New tests: `tests/test_reliability.py` (29), `tests/test_prompt_injection.py` (1
 |---|---|
 | Stop: goal achieved | `GOAL_ACHIEVED` only when critique approves ≥2 extracted papers |
 | Stop: essential information missing | `USER_CLARIFICATION_REQUIRED` (pause + resume) |
-| Stop: unacceptable risk | `UNACCEPTABLE_RISK` (instruction override, secret/destructive requests, fabrication) |
+| Stop: unacceptable risk | `UNACCEPTABLE_RISK` (instruction override, secret/destructive requests, fabrication); off-topic requests stop with `OUT_OF_SCOPE` |
 | Stop: max steps | `MAX_STEPS_REACHED` with a bounded partial report |
 | Max two retries, correct counting/exhaustion | Per tool/item; `MAX_RETRIES=2`; tested |
 | Unreliable input tests | Missing, conflicting, invalid, timeouts, injection, invalid tool output, PDF failures |

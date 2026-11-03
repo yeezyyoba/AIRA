@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
   LayoutDashboard,
+  X,
   Cpu
 } from "lucide-react";
 import { SystemHealth } from "@/types/aira";
@@ -24,6 +25,7 @@ interface SidebarProps {
   historySessions: Array<{ id: string; query: string; status: string; date: string }>;
   activeSessionId?: string;
   onSelectSession: (id: string) => void;
+  onRemoveSession: (id: string) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -34,6 +36,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   historySessions,
   activeSessionId,
   onSelectSession,
+  onRemoveSession,
 }) => {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -158,21 +161,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {historySessions.map((s) => {
                   const isSelected = activeSessionId === s.id;
                   return (
-                    <button
-                      key={s.id}
-                      onClick={() => onSelectSession(s.id)}
-                      className={`w-full text-left p-2.5 rounded-xl text-xs transition-all border block ${
-                        isSelected
-                          ? "bg-slate-800/90 text-indigo-200 border-indigo-500/40 shadow-sm"
-                          : "bg-slate-900/60 hover:bg-slate-800/50 text-slate-400 hover:text-slate-200 border-slate-800/70"
-                      }`}
-                    >
-                      <p className="font-medium text-slate-200 truncate leading-snug">{s.query}</p>
-                      <div className="flex items-center justify-between gap-1.5 mt-2">
-                        <span className="font-mono text-[9px] text-slate-500">{s.id.slice(0, 10)}</span>
-                        {getStatusBadge(s.status)}
-                      </div>
-                    </button>
+                    <div key={s.id} className="group relative">
+                      <button
+                        onClick={() => onSelectSession(s.id)}
+                        className={`w-full text-left p-2.5 pr-8 rounded-xl text-xs transition-all border block ${
+                          isSelected
+                            ? "bg-slate-800/90 text-indigo-200 border-indigo-500/40 shadow-sm"
+                            : "bg-slate-900/60 hover:bg-slate-800/50 text-slate-400 hover:text-slate-200 border-slate-800/70"
+                        }`}
+                      >
+                        <p className="font-medium text-slate-200 truncate leading-snug">{s.query}</p>
+                        <div className="flex items-center justify-between gap-1.5 mt-2">
+                          <span className="font-mono text-[9px] text-slate-500">{s.id.slice(0, 10)}</span>
+                          {getStatusBadge(s.status)}
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => onRemoveSession(s.id)}
+                        className="absolute top-2 right-2 p-1 rounded-md text-slate-500 hover:text-rose-300 hover:bg-rose-500/10 opacity-60 group-hover:opacity-100 focus:opacity-100"
+                        title="Remove from recent inquiries"
+                        aria-label={`Remove "${s.query}" from recent inquiries`}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   );
                 })}
               </div>

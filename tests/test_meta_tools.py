@@ -3,6 +3,8 @@
 Meta-tools are pure functions, so they are tested directly without building
 the LangGraph workflow.
 """
+import pytest
+
 from meta_tools import (
     PHASES,
     assess_request,
@@ -92,7 +94,7 @@ def test_revise_plan_reopens_search_and_resets_extraction():
 
 def test_ask_user_accepts_specific_topic():
     result = assess_request("Amharic sentiment analysis with transformers")
-    assert result == {"missing": [], "question": None, "risks": []}
+    assert result == {"missing": [], "question": None, "risks": [], "out_of_scope": None}
 
 
 def test_ask_user_requests_topic_when_query_empty():
@@ -200,3 +202,76 @@ def test_usable_extraction_and_injection_warnings():
     assert is_usable_extraction({**good, "status": "FAILED"}) is False
     assert injection_warnings(good) == ["Possible prompt injection pattern detected"]
     assert injection_warnings(None) == []
+
+
+# --- Research scope (AIRA = language research assistant) ----------------------
+
+@pytest.mark.parametrize("query", [
+    "Who won the 2022 FIFA World Cup?",
+    "best football tactics for my team",
+    "tell me a joke",
+    "write my cover letter",
+    "football players who were injured",  # "were" must not match the metric "wer"
+    "texture synthesis",                  # "texture" must not match "text"
+])
+def test_off_topic_requests_are_out_of_scope(query):
+    result = assess_request(query)
+    assert result["out_of_scope"]
+    assert "language" in result["out_of_scope"].lower()
+    assert not result["missing"] and not result["risks"]
+
+
+@pytest.mark.parametrize("query", [
+    "deep learning optimization techniques",
+    "vision transformers for image classification",
+])
+def test_ai_topics_without_language_angle_ask_for_clarification(query):
+    result = assess_request(query)
+    assert result["missing"] and result["question"]
+    assert result["out_of_scope"] is None
+
+
+@pytest.mark.parametrize("query", [
+    "Amharic sentiment analysis with transformers",
+    "Speech recognition for Tigrinya",
+    "BERT for low-resource NER",
+    "LLMs for Ethiopian languages",
+    "Evaluate Conformer models on LibriSpeech",
+    "humor detection in Amharic jokes",
+    "Afaan Oromo hate speech detection",
+    "multilingual tokenizer fairness",
+])
+def test_language_research_is_in_scope(query):
+    result = assess_request(query)
+    assert result == {"missing": [], "question": None, "risks": [], "out_of_scope": None}
+
+
+def test_clarification_can_bring_a_request_into_scope():
+    assert assess_request("deep learning optimization", "for Amharic machine translation")["out_of_scope"] is None
+    assert not assess_request("deep learning optimization", "for Amharic machine translation")["missing"]
+
+
+@pytest.mark.anyio
+async def test_out_of_scope_request_stops_before_any_tool(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    from agents.graph import build_research_graph
+    from services.paper_repository import PaperRepository
+
+    search = MagicMock()
+    monkeypatch.setattr("agents.nodes.search_academic_papers", search)
+    graph = build_research_graph(router=MagicMock(), repository=PaperRepository(storage_dir=str(tmp_path)))
+    final = await graph.ainvoke({"query": "Who won the 2022 FIFA World Cup?"},
+                                config={"configurable": {"thread_id": "oos"}})
+    assert final["stopping_reason"] == "OUT_OF_SCOPE"
+    assert "language" in final["user_message"].lower()
+    assert final["final_report"] is None
+    assert not search.called
+
+
+def test_api_returns_out_of_scope_message():
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    data = TestClient(app).post("/api/v1/research/sessions", json={"query": "best football tactics"}).json()
+    assert data["status"] == "OUT_OF_SCOPE"
+    assert data["message"] and "Amharic" in data["message"]

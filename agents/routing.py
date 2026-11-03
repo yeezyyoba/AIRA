@@ -34,7 +34,7 @@ def _step_budget_exhausted(state: ResearchState) -> bool:
 
 
 def route_after_check_information(state: ResearchState) -> str:
-    if state.get("stopping_reason") == "UNACCEPTABLE_RISK" or state.get("risk_flags"):
+    if state.get("stopping_reason") in ("UNACCEPTABLE_RISK", "OUT_OF_SCOPE") or state.get("risk_flags"):
         return "finish_task"
     if state.get("missing_information"):
         return "ask_user"

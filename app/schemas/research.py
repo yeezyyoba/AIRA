@@ -9,6 +9,10 @@ class ResearchRequest(BaseModel):
     year_from: Optional[int] = Field(None, ge=1900, le=2100)
     year_to: Optional[int] = Field(None, ge=1900, le=2100)
     max_results: int = Field(default=20, ge=1, le=100)
+    run_in_background: bool = Field(
+        default=False,
+        description="Return immediately with status IN_PROGRESS; poll the session and stream /events for progress",
+    )
 
 
 class ResearchResponse(BaseModel):
@@ -18,6 +22,7 @@ class ResearchResponse(BaseModel):
     research_goal: str
     query: Optional[str] = None
     clarification_question: Optional[str] = None
+    message: Optional[str] = Field(None, description="Explanation shown to the user when a request is refused or out of scope")
     missing_information: Optional[List[str]] = None
     plan: Optional[List[Dict[str, Any]]] = None
     final_report: Optional[Dict[str, Any]] = None
@@ -38,6 +43,7 @@ class ResearchResponse(BaseModel):
 class ResearchResumeRequest(BaseModel):
     """Request payload for resuming a paused research session with clarification."""
     clarification_response: str = Field(..., min_length=1, max_length=2000, description="User's clarification response or answers")
+    run_in_background: bool = Field(default=False, description="Resume without waiting for the run to finish")
 
 
 # =====================================================================

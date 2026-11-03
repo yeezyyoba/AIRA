@@ -9,6 +9,7 @@ import { ExecutionProgress } from "@/components/ExecutionProgress";
 import { ResearchResultsView } from "@/components/ResearchResultsView";
 import { ReportsView, type ReportSummary } from "@/components/ReportsView";
 import { RepositoryView } from "@/components/RepositoryView";
+import { LiveEventLog } from "@/components/LiveEventLog";
 import { airaApi } from "@/services/api";
 import { ResearchResponse, SystemHealth } from "@/types/aira";
 import { AlertCircle } from "lucide-react";
@@ -97,12 +98,16 @@ export default function Home() {
     }
   }, []);
 
-  // Sync history to localStorage whenever it changes
+  // Sync history to localStorage whenever it changes. Skip the very first
+  // render (empty list) so it does not overwrite saved history before it loads.
+  const historyLoadedRef = useRef(false);
   useEffect(() => {
+    if (!historyLoadedRef.current) {
+      historyLoadedRef.current = true;
+      if (historySessions.length === 0) return;
+    }
     try {
-      if (historySessions.length > 0) {
-        localStorage.setItem("aira_history_sessions", JSON.stringify(historySessions));
-      }
+      localStorage.setItem("aira_history_sessions", JSON.stringify(historySessions));
     } catch {}
   }, [historySessions]);
 
@@ -125,6 +130,9 @@ export default function Home() {
         "MAX_STEPS_REACHED",
         "USER_CLARIFICATION_REQUIRED",
         "INSUFFICIENT_EVIDENCE",
+        "PARTIAL",
+        "OUT_OF_SCOPE",
+        "UNACCEPTABLE_RISK",
         "SAFETY_STOP",
         "EXPIRED",
         "FAILED",
@@ -151,6 +159,9 @@ export default function Home() {
 
         if (isTerminal(updated.status)) {
           clearInterval(intervalId);
+          if (updated.status === "FAILED") {
+            setErrorMessage(updated.message || `Research session '${updated.session_id}' failed. See the live event log for details.`);
+          }
           loadReportsList();
           loadPapersList();
         }
@@ -240,6 +251,20 @@ export default function Home() {
     }
   };
 
+  // Remove an inquiry from the local history list (the backend session is untouched).
+  const handleRemoveSession = (sessionId: string) => {
+    setHistorySessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (currentSession?.session_id === sessionId) {
+      setCurrentSession(null);
+      setErrorMessage(null);
+      try {
+        localStorage.removeItem("aira_active_session_id");
+      } catch {}
+    }
+  };
+
+  const isRunning = currentSession?.status === "IN_PROGRESS" || currentSession?.status === "RUNNING";
+
   const handleLaunchPresetFromDashboard = (presetQuery: string) => {
     setActiveQueryDraft(presetQuery);
     setCurrentTab("workspace");
@@ -261,6 +286,7 @@ export default function Home() {
         historySessions={historySessions}
         activeSessionId={currentSession?.session_id}
         onSelectSession={handleSelectSession}
+        onRemoveSession={handleRemoveSession}
       />
 
       {/* Main Content Workspace */}
@@ -322,7 +348,7 @@ export default function Home() {
               key={activeQueryDraft}
               initialQuery={activeQueryDraft}
               onSubmit={handleStartSession}
-              isLoading={isLoading}
+              isLoading={isLoading || isRunning}
             />
 
             {/* Clarification prompt if paused */}
@@ -335,12 +361,41 @@ export default function Home() {
               />
             )}
 
+            {/* Refused request: explain why instead of showing an empty run */}
+            {(currentSession?.status === "OUT_OF_SCOPE" || currentSession?.status === "UNACCEPTABLE_RISK") && (
+              <div
+                role="alert"
+                className={`rounded-2xl border p-5 text-sm leading-relaxed ${
+                  currentSession.status === "OUT_OF_SCOPE"
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-100"
+                    : "bg-rose-500/10 border-rose-500/30 text-rose-100"
+                }`}
+              >
+                <p className="font-semibold mb-1">
+                  {currentSession.status === "OUT_OF_SCOPE" ? "Outside AIRA's research scope" : "Request refused for safety"}
+                </p>
+                <p>
+                  {currentSession.message ||
+                    "AIRA researches language technology: NLP, speech, machine translation, and Amharic and other low-resource languages."}
+                </p>
+              </div>
+            )}
+
             {/* Execution Plan & Observable Logs */}
             {currentSession && (
               <ExecutionProgress
                 plan={currentSession.plan}
                 logs={currentSession.observable_logs}
                 status={currentSession.status}
+              />
+            )}
+
+            {/* Live event log streamed from the backend while the run executes */}
+            {currentSession?.session_id && (
+              <LiveEventLog
+                key={currentSession.session_id}
+                sessionId={currentSession.session_id}
+                isRunning={isRunning}
               />
             )}
 

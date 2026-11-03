@@ -490,7 +490,8 @@ async def test_scenario_09_prompt_injection_inside_paper_contained(test_paper_re
     graph = build_research_graph(router=mock_router, repository=test_paper_repo)
     final_state = await graph.ainvoke(
         {
-            "query": "Security benchmark injection",
+            # Queries must be in AIRA's language-research scope; the subject here is injection containment.
+            "query": "Speech recognition benchmark with an injected paper",
             "extracted_papers": ["paper_injected_sec", "paper_asr_001"],
             "completed_tasks": ["search_and_validate", "extract_and_index"],
         },
@@ -522,7 +523,8 @@ async def test_scenario_10_maximum_step_stopping(test_paper_repo, mock_router):
     graph = build_research_graph(router=mock_router, repository=test_paper_repo)
 
     initial_state = {
-        "query": "Broad multi-domain investigation",
+        # In-scope query; the subject of this test is the step limit, not the topic.
+        "query": "Broad multi-domain investigation of low-resource NLP",
         "max_steps": 3,  # Strict low limit
         "step_count": 0,
     }

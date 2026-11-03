@@ -374,6 +374,7 @@ def receive_request(state: ResearchState) -> Dict[str, Any]:
         "clarification_response": clarification,
         "stopping_reason": None,
         "risk_flags": [],
+        "user_message": None,
         "security_flags": list(state.get("security_flags", [])),
         "observable_logs": logs,
         "is_degraded": False,
@@ -435,11 +436,14 @@ def check_information(state: ResearchState) -> Dict[str, Any]:
     """Stopping rules 'essential information missing' and 'unacceptable risk'."""
     assessment = assess_request(state.get("query"), state.get("clarification_response"))
     missing, question, risks = assessment["missing"], assessment["question"], assessment["risks"]
+    out_of_scope = assessment.get("out_of_scope")
 
     step = state.get("step_count", 0) + 1
     logs = list(state.get("observable_logs", []))
     if risks:
         decision, outcome = "; ".join(risks) + " Stopping for unacceptable risk.", "UNACCEPTABLE_RISK"
+    elif out_of_scope:
+        decision, outcome = f"Request is outside AIRA's research scope. {out_of_scope}", "OUT_OF_SCOPE"
     elif missing:
         decision, outcome = "; ".join(missing), "CLARIFICATION_REQUIRED"
     else:
@@ -455,6 +459,10 @@ def check_information(state: ResearchState) -> Dict[str, Any]:
     }
     if risks:
         update["stopping_reason"] = "UNACCEPTABLE_RISK"
+        update["user_message"] = "This request was refused: " + " ".join(risks)
+    elif out_of_scope:
+        update["stopping_reason"] = "OUT_OF_SCOPE"
+        update["user_message"] = out_of_scope
     return update
 
 
@@ -1621,7 +1629,7 @@ async def generate_report_node(
     generation_error = None
     logs = list(state.get("observable_logs", []))
 
-    if state.get("stopping_reason") == "UNACCEPTABLE_RISK":
+    if state.get("stopping_reason") in ("UNACCEPTABLE_RISK", "OUT_OF_SCOPE"):
         logs.append(_log_event(state, "generate_report", "No report produced for a refused request.",
                                outcome="SKIPPED", step=step))
         return {"final_report": None, "step_count": step, "observable_logs": logs}
