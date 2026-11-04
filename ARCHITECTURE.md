@@ -295,7 +295,8 @@ The architecture incorporates:
 - Graph checkpoints are currently in-process rather than durable.
 - Complex PDF layouts and tables can produce imperfect extraction.
 - Automated evidence validation is heuristic and does not replace expert review.
-- Current evaluation includes component-level tests and does not establish broad real-world end-to-end performance.
+- The evaluation covers 10 live end-to-end runs and 18 offline end-to-end scenarios, but the live runs are mostly on Amharic sentiment analysis, so broad real-world performance across topics is not yet established.
+- Scope and risk checks are keyword-based, so a carefully reworded request could slip past them.
 
 ## 9. Future Architecture Improvements
 
