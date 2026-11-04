@@ -154,9 +154,9 @@ The graph always terminates with one of these statuses:
 | --- | --- |
 | LLM tool proposal invalid (unknown/illegal tool, bad arguments, URL injection, out-of-scope query) | Code rejects it and uses the rule-based choice |
 | LLM proposal times out or the provider fails | Rule-based choice; after 2 consecutive failures, LLM proposals pause for the rest of the run |
-| Gemini fails (quota, 429, 503, timeout) | Groq (`openai/gpt-oss-120b`) |
+| Gemini fails (quota, 429, 503, timeout) | Groq (`openai/gpt-oss-120b`), then NVIDIA (`openai/gpt-oss-120b` on build.nvidia.com) if `NVIDIA_API_KEY` is set |
 | A provider returns 429 / 503 | It is paused for its own "retry in N s" hint (max 30 s) and requests go to the other provider |
-| Both LLM providers down | **Degraded mode**: deterministic tools (search, PDF extraction, DOI validation, metrics, citations) continue; reasoning steps use rules |
+| Every LLM provider down | **Degraded mode**: deterministic tools (search, PDF extraction, DOI validation, metrics, citations) continue; reasoning steps use rules |
 | Semantic Scholar rate limit | Requests are spaced 1.1 s apart; Semantic Scholar is skipped when Crossref and OpenAlex already agree |
 | PDF link is a landing page | Direct PDF links (`.pdf`, arXiv, ACL Anthology) are tried first |
 | Report generation fails | A clearly labelled `PARTIAL` report that states what is unknown |
@@ -164,7 +164,8 @@ The graph always terminates with one of these statuses:
 | Provider | Role | Default model |
 | --- | --- | --- |
 | Google Gemini | Primary | `gemini-3.8-flash` |
-| Groq | Fallback | `openai/gpt-oss-120b` |
+| Groq | Fallback 1 | `openai/gpt-oss-120b` |
+| NVIDIA (build.nvidia.com, optional) | Fallback 2 | `openai/gpt-oss-120b` (`NVIDIA_MODEL`) |
 
 ---
 

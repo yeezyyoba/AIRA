@@ -29,7 +29,15 @@ logger = get_logger("groq_provider")
 
 
 class GroqProvider:
-    """Independent fallback LLM provider using Groq."""
+    """Independent fallback LLM provider using Groq.
+
+    Also the base class for other OpenAI-compatible chat providers (see
+    ``llm/nvidia_provider.py``): subclasses set ``display_name`` and
+    ``key_setting_name`` and build their own client.
+    """
+
+    display_name = "Groq"
+    key_setting_name = "GROQ_API_KEY"
 
     def __init__(
         self,
@@ -67,7 +75,7 @@ class GroqProvider:
         if not self.api_key and self._client is None:
             self.status = ProviderStatus.AUTHENTICATION_ERROR
             raise AuthenticationError(
-                "Groq API key is not configured. Set GROQ_API_KEY in .env.",
+                f"{self.display_name} API key is not configured. Set {self.key_setting_name} in .env.",
                 provider=self.name,
             )
 
@@ -76,11 +84,11 @@ class GroqProvider:
         err_msg = str(error).lower()
         err_type = type(error).__name__.lower()
 
-        logger.error(f"Groq API error [{err_type}]: {error}")
+        logger.error(f"{self.display_name} API error [{err_type}]: {error}")
 
         if isinstance(error, groq.AuthenticationError) or "401" in err_msg or "unauthorized" in err_msg:
             self.status = ProviderStatus.AUTHENTICATION_ERROR
-            raise AuthenticationError(f"Groq authentication failed: {error}", provider=self.name)
+            raise AuthenticationError(f"{self.display_name} authentication failed: {error}", provider=self.name)
 
         if (
             isinstance(error, getattr(groq, "NotFoundError", Exception))
@@ -90,7 +98,7 @@ class GroqProvider:
         ):
             self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
             raise ModelNotFoundError(
-                f"Groq model '{self.model}' is unavailable or not found: {error}",
+                f"{self.display_name} model '{self.model}' is unavailable or not found: {error}",
                 provider=self.name,
             )
 
@@ -98,12 +106,12 @@ class GroqProvider:
             if "quota" in err_msg or "exceeded your current quota" in err_msg:
                 self.status = ProviderStatus.QUOTA_EXHAUSTED
                 raise QuotaExceededError(
-                    f"Groq quota exhausted: {error}", provider=self.name,
+                    f"{self.display_name} quota exhausted: {error}", provider=self.name,
                     retry_after=parse_retry_after_seconds(error),
                 )
             self.status = ProviderStatus.RATE_LIMITED
             raise RateLimitError(
-                f"Groq rate limit exceeded: {error}", provider=self.name,
+                f"{self.display_name} rate limit exceeded: {error}", provider=self.name,
                 retry_after=parse_retry_after_seconds(error),
             )
 
@@ -115,13 +123,13 @@ class GroqProvider:
             or "connection" in err_msg
         ):
             self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
-            raise ProviderUnavailableError(f"Groq service temporarily unavailable: {error}", provider=self.name)
+            raise ProviderUnavailableError(f"{self.display_name} service temporarily unavailable: {error}", provider=self.name)
 
         if isinstance(error, getattr(groq, "BadRequestError", ())) or re.search(r"\b400\b", err_msg):
-            raise BadRequestError(f"Groq rejected the request: {error}", provider=self.name)
+            raise BadRequestError(f"{self.display_name} rejected the request: {error}", provider=self.name)
 
         self.status = ProviderStatus.TEMPORARILY_UNAVAILABLE
-        raise ProviderUnavailableError(f"Groq error: {error}", provider=self.name)
+        raise ProviderUnavailableError(f"{self.display_name} error: {error}", provider=self.name)
 
     def generate(
         self,
@@ -152,9 +160,9 @@ class GroqProvider:
         latency = time.perf_counter() - start_time
 
         if not response.choices or not response.choices[0].message.content:
-            logger.warning("Groq returned empty completion choice.")
+            logger.warning(f"{self.display_name} returned empty completion choice.")
             raise InvalidResponseError(
-                "Groq returned an empty response.",
+                f"{self.display_name} returned an empty response.",
                 provider=self.name,
             )
 
@@ -217,16 +225,16 @@ class GroqProvider:
         latency = time.perf_counter() - start_time
 
         if not response.choices or not response.choices[0].message.content:
-            raise InvalidResponseError("Groq returned empty structured content.", provider=self.name)
+            raise InvalidResponseError(f"{self.display_name} returned empty structured content.", provider=self.name)
 
         raw_text = response.choices[0].message.content
 
         try:
             validated_obj = schema.model_validate_json(strip_json_fences(raw_text))
         except Exception as e:
-            logger.error(f"Failed to validate Groq structured JSON against {schema.__name__}: {e}")
+            logger.error(f"Failed to validate {self.display_name} structured JSON against {schema.__name__}: {e}")
             raise InvalidResponseError(
-                f"Groq output could not be parsed into {schema.__name__}: {e}",
+                f"{self.display_name} output could not be parsed into {schema.__name__}: {e}",
                 provider=self.name,
             )
 
@@ -297,7 +305,7 @@ class GroqProvider:
         message = response.choices[0].message if getattr(response, "choices", None) else None
         tool_calls = getattr(message, "tool_calls", None) or []
         if not tool_calls:
-            raise InvalidResponseError("Groq returned no tool call.", provider=self.name)
+            raise InvalidResponseError(f"{self.display_name} returned no tool call.", provider=self.name)
         first = tool_calls[0]
         function = getattr(first, "function", None)
         name = getattr(function, "name", None)
@@ -305,9 +313,9 @@ class GroqProvider:
         try:
             args = json.loads(raw_args) if raw_args else {}
         except (TypeError, ValueError) as exc:
-            raise InvalidResponseError(f"Groq tool-call arguments are not valid JSON: {exc}", provider=self.name)
+            raise InvalidResponseError(f"{self.display_name} tool-call arguments are not valid JSON: {exc}", provider=self.name)
         if not name or not isinstance(args, dict):
-            raise InvalidResponseError("Groq returned a malformed tool call.", provider=self.name)
+            raise InvalidResponseError(f"{self.display_name} returned a malformed tool call.", provider=self.name)
 
         usage = getattr(response, "usage", None)
         prompt_tokens = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0

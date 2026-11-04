@@ -13,6 +13,7 @@ interface ApiUsagePanelProps {
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: "Gemini",
   groq: "Groq",
+  nvidia: "NVIDIA",
   openalex: "OpenAlex",
   crossref: "Crossref",
   semantic_scholar: "Semantic Scholar",

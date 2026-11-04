@@ -25,6 +25,7 @@ _TEST_ROOT = tempfile.mkdtemp(prefix="aira_tests_")
 os.environ.update({
     "GEMINI_API_KEY": "",
     "GROQ_API_KEY": "",
+    "NVIDIA_API_KEY": "",
     "OPENALEX_API_KEY": "",
     "SEMANTIC_SCHOLAR_API_KEY": "",
     "LANGSMITH_TRACING": "false",

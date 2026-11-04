@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from llm.gemini_provider import GeminiProvider, LLMResponse
 from llm.fallback_provider import GroqProvider
+from llm.nvidia_provider import NvidiaProvider
 from llm.provider_errors import (
     AuthenticationError,
     BadRequestError,
@@ -38,9 +39,15 @@ class ModelRouter:
         fallback_provider: Optional[GroqProvider] = None,
         max_retries: int = 2,
         initial_backoff_seconds: float = 0.5,
+        extra_fallback_providers: Optional[List[Any]] = None,
     ):
         self.gemini = gemini_provider or GeminiProvider()
         self.fallback = fallback_provider or GroqProvider()
+        # Further fallbacks, tried in order after the first one (Groq).
+        # By default NVIDIA joins the chain when NVIDIA_API_KEY is set.
+        if extra_fallback_providers is None:
+            extra_fallback_providers = [NvidiaProvider()] if settings.NVIDIA_API_KEY else []
+        self.fallbacks: List[Any] = [self.fallback, *extra_fallback_providers]
         self.max_retries = max_retries
         self.initial_backoff_seconds = initial_backoff_seconds
         self.active_provider_name: str = "gemini"
@@ -131,7 +138,8 @@ class ModelRouter:
     def reset_status(self) -> None:
         """Reset provider statuses and exit degraded mode (e.g. after config update)."""
         self.gemini.status = ProviderStatus.AVAILABLE
-        self.fallback.status = ProviderStatus.AVAILABLE
+        for provider in self.fallbacks:
+            provider.status = ProviderStatus.AVAILABLE
         self.active_provider_name = "gemini"
         self.degraded_mode = False
         self._degraded_since = None
@@ -426,58 +434,80 @@ class ModelRouter:
                     reason=f"Unexpected error: {unexpected_err}",
                 )
 
-        # 2. Attempt Fallback Provider (Groq)
-        if deadline is not None and deadline - time.monotonic() < float(settings.LLM_MIN_FALLBACK_BUDGET_SECONDS):
-            # The caller's budget is spent: starting another request now would
-            # only produce an answer nobody waits for.
-            raise ProviderUnavailableError(
-                f"Time budget of {timeout:.0f}s spent before the fallback provider could be tried.",
-                provider="router",
-            )
-        fallback_wait = self.cooling_remaining(self.fallback.name)
-        if fallback_wait > 0:
-            # Temporary: not Degraded Mode, the cooldowns expire on their own.
-            logger.warning(
-                f"Fallback provider {self.fallback.name} is cooling down for {fallback_wait:.0f}s more; "
-                "no LLM provider can take this request right now."
-            )
-            raise DegradedModeError(
-                f"LLM providers are temporarily paused after rate limits ({self.fallback.name} "
-                f"resumes in about {fallback_wait:.0f}s). Reasoning steps fall back to rules meanwhile.",
-                provider="router",
-            )
-        try:
-            logger.info(f"Routing request to fallback LLM: {self.fallback.name} ({self.fallback.model})")
-            self.active_provider_name = self.fallback.name
-            return self._call_provider(self.fallback, method_name, args, kwargs, max_retries, deadline)
-        except Exception as fallback_err:
-            if deadline is not None:
-                # A budgeted single request (tool proposal) failing is not
-                # evidence that both providers are down for two minutes.
-                raise
-            if isinstance(fallback_err, RateLimitError) and self.cooling_remaining(
-                self.fallback.name
-            ) > 0:
-                # The fallback is in a short, known cooldown; do not escalate
-                # to the long Degraded Mode pause for a per-minute limit.
-                raise DegradedModeError(
-                    f"Both Gemini and {self.fallback.name} are rate limited; requests resume in about "
-                    f"{self.cooling_remaining(self.fallback.name):.0f}s. Last error: {fallback_err}",
+        # 2. Fallback chain (Groq, then NVIDIA if configured), in order.
+        tried_any = False
+        rate_limited: List[str] = []
+        last_err: Optional[Exception] = None
+        previous = self.gemini.name
+        for index, provider in enumerate(self.fallbacks):
+            if deadline is not None and deadline - time.monotonic() < float(settings.LLM_MIN_FALLBACK_BUDGET_SECONDS):
+                # The caller's budget is spent: starting another request now
+                # would only produce an answer nobody waits for.
+                if last_err is not None:
+                    raise last_err
+                raise ProviderUnavailableError(
+                    f"Time budget of {timeout:.0f}s spent before the fallback provider could be tried.",
                     provider="router",
-                ) from fallback_err
-            logger.critical(
-                f"Fallback provider {self.fallback.name} also failed: {fallback_err}. "
-                "Entering DEGRADED MODE."
-            )
-            self.degraded_mode = True
-            self._degraded_since = time.monotonic()
-            usage_tracker.record_error("router", "DegradedModeActivated")
+                )
+            wait = self.cooling_remaining(provider.name)
+            if wait > 0:
+                logger.warning(f"Fallback provider {provider.name} is cooling down for {wait:.0f}s more; skipping it.")
+                rate_limited.append(provider.name)
+                continue
+            if tried_any:
+                usage_tracker.record_fallback(
+                    from_provider=previous, to_provider=provider.name, reason=str(last_err),
+                )
+            tried_any = True
+            try:
+                logger.info(f"Routing request to fallback LLM: {provider.name} ({provider.model})")
+                self.active_provider_name = provider.name
+                return self._call_provider(provider, method_name, args, kwargs, max_retries, deadline)
+            except Exception as fallback_err:
+                last_err = fallback_err
+                previous = provider.name
+                if isinstance(fallback_err, RateLimitError) and self.cooling_remaining(provider.name) > 0:
+                    rate_limited.append(provider.name)
+                more = index + 1 < len(self.fallbacks)
+                logger.warning(
+                    f"Fallback provider {provider.name} failed: {fallback_err}."
+                    + (" Trying the next provider." if more else "")
+                )
+
+        if not tried_any:
+            # Every fallback is in a short cooldown: temporary, not Degraded Mode.
+            soonest = min(self.cooling_remaining(name) for name in rate_limited) if rate_limited else 0.0
+            logger.warning("Every fallback LLM provider is cooling down; no provider can take this request now.")
             raise DegradedModeError(
-                f"Both Gemini and {self.fallback.name} failed. "
-                f"Primary error was handled; fallback error was: {fallback_err}. "
-                "AIRA has entered Degraded Mode.",
+                f"LLM providers are temporarily paused after rate limits ({', '.join(rate_limited)}; "
+                f"the first resumes in about {soonest:.0f}s). Reasoning steps fall back to rules meanwhile.",
                 provider="router",
-            ) from fallback_err
+            )
+        assert last_err is not None
+        if deadline is not None:
+            # A budgeted single request (tool proposal) failing is not
+            # evidence that every provider is down for two minutes.
+            raise last_err
+        if rate_limited:
+            # At least one provider is only in a short, known cooldown; do not
+            # escalate to the long Degraded Mode pause for a per-minute limit.
+            soonest = min(self.cooling_remaining(name) for name in rate_limited)
+            raise DegradedModeError(
+                f"Gemini and the fallback providers are rate limited ({', '.join(rate_limited)}); requests resume "
+                f"in about {soonest:.0f}s. Last error: {last_err}",
+                provider="router",
+            ) from last_err
+        chain = ", ".join(p.name for p in self.fallbacks)
+        logger.critical(f"Every fallback provider ({chain}) failed; last error: {last_err}. Entering DEGRADED MODE.")
+        self.degraded_mode = True
+        self._degraded_since = time.monotonic()
+        usage_tracker.record_error("router", "DegradedModeActivated")
+        raise DegradedModeError(
+            f"Both Gemini and the fallback providers ({chain}) failed. "
+            f"Primary error was handled; last fallback error was: {last_err}. "
+            "AIRA has entered Degraded Mode.",
+            provider="router",
+        ) from last_err
 
     def generate(
         self,

@@ -19,10 +19,12 @@ def get_health() -> HealthResponse:
             "orchestration": "LangGraph (Configured)",
             "llm_router": f"Active: {model_router.get_active_provider_name()} (Degraded: {model_router.is_degraded_mode()})",
             "llm_primary": f"Gemini ({settings.GEMINI_MODEL})",
-            "llm_fallback": f"{settings.FALLBACK_PROVIDER.capitalize()} ({settings.GROQ_MODEL})",
+            "llm_fallback": f"{settings.FALLBACK_PROVIDER.capitalize()} ({settings.GROQ_MODEL})"
+            + (f" → NVIDIA ({settings.NVIDIA_MODEL})" if settings.NVIDIA_API_KEY else ""),
             "llm_keys": (
                 f"gemini={'set' if settings.GEMINI_API_KEY else 'missing'}, "
-                f"groq={'set' if settings.GROQ_API_KEY else 'missing'}"
+                f"groq={'set' if settings.GROQ_API_KEY else 'missing'}, "
+                f"nvidia={'set' if settings.NVIDIA_API_KEY else 'not configured'}"
             ),
             "session_store": "In-memory LangGraph checkpointer (sessions do not survive a restart)",
             "report_store": f"JSON/Markdown files in {settings.REPORTS_DIRECTORY}",

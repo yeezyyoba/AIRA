@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "openai/gpt-oss-120b"
 
+    # Third LLM provider (NVIDIA build.nvidia.com, OpenAI-compatible). Optional:
+    # without a key it is left out of the fallback chain.
+    NVIDIA_API_KEY: Optional[str] = None
+    NVIDIA_MODEL: str = "openai/gpt-oss-120b"
+    NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
+
     # Academic Search APIs
     OPENALEX_API_KEY: Optional[str] = None
     SEMANTIC_SCHOLAR_API_KEY: Optional[str] = None
