@@ -13,7 +13,7 @@ Key capabilities include:
 - Stateful agent orchestration using LangGraph.
 - Academic paper discovery through OpenAlex, Semantic Scholar, and Crossref.
 - Cross-registry academic metadata validation.
-- PDF upload, downloading, text extraction, and section parsing.
+- PDF downloading, text extraction, and section parsing during research runs (PDF upload is available through the API at `/docs`, not yet in the UI)
 - Research retrieval using ChromaDB.
 - Experimental result analysis and paper comparison.
 - APA 7, IEEE, and BibTeX citation generation.
