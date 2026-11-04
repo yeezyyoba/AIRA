@@ -442,11 +442,12 @@ For the six evaluated questions:
 
 ### 8.3 Automated testing
 
-The last recorded full backend regression suite (3 Nov 2026) completed with:
+The last recorded full backend regression suite (4 Nov 2026) completed with:
 
-**447 tests passed** (Python 3.11), run with `python -m pytest tests`. This includes 18 end-to-end
-graph scenarios (`tests/test_graph.py`), the LLM function-calling tests (`tests/test_tool_calling.py`)
-and the rate-limit and API-usage tests (`tests/test_rate_limits.py`).
+**464 tests passed** (Python 3.11), run with `python -m pytest tests`. This includes 18 end-to-end
+graph scenarios (`tests/test_graph.py`), the LLM function-calling tests (`tests/test_tool_calling.py`),
+the rate-limit and API-usage tests (`tests/test_rate_limits.py`) and the NVIDIA fallback tests
+(`tests/test_nvidia_provider.py`).
 
 `tests/conftest.py` isolates every test run: API keys are blanked, embeddings are
 mocked, data directories point to a temporary folder, and outbound network
